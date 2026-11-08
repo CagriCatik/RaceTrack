@@ -1,27 +1,94 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0" />
-  <title>Three.js 3‑D Car Game</title>
+  <meta name="theme-color" content="#0d1322" />
+  <title>RaceTrack — Three.js Car Game</title>
   <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1322'/%3E%3Cpath d='M5 20h22l-2-5-4-2H11l-4 2z' fill='%236dd4ff'/%3E%3Ccircle cx='10' cy='22' r='3' fill='%23dceaff'/%3E%3Ccircle cx='22' cy='22' r='3' fill='%23dceaff'/%3E%3C/svg%3E" />
   <script type="importmap">
     {
       "imports": {
         "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
-        "OrbitControls": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/controls/OrbitControls.js"
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
       }
     }
   </script>
 </head>
 <body>
   <canvas id="canvas"></canvas>
-  <script type="module" src="./src/main.js?v=unified-20260329-22"></script>
+
+  <!-- UI layer: everything outside the canvas lives here -->
+  <div id="ui" class="ui" aria-live="polite">
+    <!-- Telemetry -->
+    <section id="hud" class="panel hud" hidden>
+      <div class="hud__speed">
+        <span id="hud-speed" class="hud__speed-value">0</span>
+        <span class="hud__speed-unit">km/h</span>
+      </div>
+      <div class="hud__gauge"><div id="hud-gauge-fill" class="hud__gauge-fill"></div></div>
+      <dl class="hud__stats">
+        <div><dt id="hud-lap-label">Runde</dt><dd id="hud-lap">0</dd></div>
+        <div><dt id="hud-time-label">Zeit</dt><dd id="hud-time">--:--.--</dd></div>
+        <div><dt id="hud-best-label">Beste</dt><dd id="hud-best">--:--.--</dd></div>
+        <div><dt id="hud-valid-label">Status</dt><dd id="hud-valid">OK</dd></div>
+      </dl>
+      <div id="hud-chips" class="chips"></div>
+    </section>
+
+    <!-- Controls legend -->
+    <section id="help" class="panel help" hidden>
+      <h2>Steuerung</h2>
+      <ul>
+        <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd><span>Fahren</span></li>
+        <li><kbd>Leertaste</kbd><span>Handbremse</span></li>
+        <li><kbd>C</kbd><span>Kamera: Verfolgung / Haube / Orbit</span></li>
+        <li><kbd>P</kbd><span>Autopilot</span></li>
+        <li><kbd>O</kbd><span>KI-Gegner</span></li>
+        <li><kbd>G</kbd><span>Ghost der besten Runde</span></li>
+        <li><kbd>M</kbd> <kbd>R</kbd><span>Minimap / Ideallinie</span></li>
+        <li><kbd>L</kbd> <kbd>N</kbd><span>Licht / Tag-Nacht</span></li>
+        <li><kbd>T</kbd> <kbd>V</kbd><span>Tuning / Waypoint-Debug</span></li>
+        <li><kbd>F</kbd> <kbd>H</kbd><span>Performance-Anzeige / diese Hilfe</span></li>
+        <li><kbd>Backspace</kbd><span>Zurück auf Strecke / Straße</span></li>
+      </ul>
+    </section>
+
+    <!-- Minimap host -->
+    <section id="minimap" class="panel minimap" hidden></section>
+
+    <!-- Lap toast -->
+    <div id="toast" class="toast" hidden></div>
+
+    <!-- Start screen / car select -->
+    <section id="start" class="start">
+      <div class="start__inner">
+        <header class="start__head">
+          <h1>Race<span>Track</span></h1>
+          <p>Wähle dein Fahrzeug — Modelle &amp; Vorschaubilder aus dem Kenney Car Kit.</p>
+        </header>
+        <div class="scenario" role="radiogroup" aria-label="Streckenwahl">
+          <button type="button" class="scenario__option" role="radio" data-scenario="city" aria-checked="true">
+            <strong>Stadtkurs</strong><span>Straßenkurs durch die Innenstadt</span>
+          </button>
+          <button type="button" class="scenario__option" role="radio" data-scenario="country" aria-checked="false">
+            <strong>Landstrecke</strong><span>Offene Piste mit Wald und Hügeln</span>
+          </button>
+          <button type="button" class="scenario__option" role="radio" data-scenario="freeroam" aria-checked="false">
+            <strong>Freie Fahrt</strong><span>Stadt ohne Strecke — fahr, wohin du willst</span>
+          </button>
+        </div>
+        <div id="car-grid" class="car-grid" role="radiogroup" aria-label="Fahrzeugauswahl"></div>
+        <footer class="start__foot">
+          <div id="car-specs" class="car-specs"></div>
+          <button id="start-button" type="button" class="btn btn--primary">Rennen starten</button>
+        </footer>
+        <p id="start-status" class="start__status"></p>
+      </div>
+    </section>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
 </body>
 </html>
-
-
-
-
-
-

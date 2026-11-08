@@ -1,451 +1,510 @@
 import * as THREE from 'three';
-import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/loaders/GLTFLoader.js';
+import { loadModel } from './core/assetLoader.js';
 import { mergeVehicleConfig, vehicleConfig as defaultVehicleConfig } from './config/vehicleConfig.js';
+import { modelPath } from './config/carCatalog.js';
 
 // ─── Math helpers ─────────────────────────────────────────────────────────────
 
-/** Frame-rate-independent exponential smoothing: feels the same at any fps */
+/** Frame-rate-independent exponential smoothing: feels the same at any fps. */
 const expLerp = (a, b, halfLife, dt) =>
-  b + (a - b) * Math.exp(-Math.LN2 / Math.max(halfLife, 1e-4) * dt);
+  b + (a - b) * Math.exp((-Math.LN2 / Math.max(halfLife, 1e-4)) * dt);
 
-/** Clamp a value to [-limit, limit] */
-const clampAbs = (v, limit) => THREE.MathUtils.clamp(v, -limit, limit);
+const clampAbs = (v, limit) => (v > limit ? limit : v < -limit ? -limit : v);
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
-/** Numeric quantile with clamped [0, 1] input */
-const quantile = (values, q) => {
-  if (!values.length) return 0;
-  if (values.length === 1) return values[0];
-  const sorted = [...values].sort((a, b) => a - b);
-  const t = THREE.MathUtils.clamp(q, 0, 1) * (sorted.length - 1);
-  const i0 = Math.floor(t);
-  const i1 = Math.min(sorted.length - 1, i0 + 1);
-  const f = t - i0;
-  return sorted[i0] * (1 - f) + sorted[i1] * f;
+// ─── Shared geometry (one instance for every vehicle ever created) ───────────
+
+const lampGeometry = {
+  head: new THREE.BoxGeometry(0.2, 0.12, 0.06),
+  drl: new THREE.BoxGeometry(0.18, 0.03, 0.05),
+  tail: new THREE.BoxGeometry(0.24, 0.14, 0.07),
+  hmsl: new THREE.BoxGeometry(0.6, 0.05, 0.06),
+  reverse: new THREE.BoxGeometry(0.18, 0.1, 0.06),
 };
 
-// ─── Spoke rim builder ────────────────────────────────────────────────────────
-
-function buildRim(radius, width, spokeCount = 6) {
-  const group = new THREE.Group();
-  const rimMat = new THREE.MeshStandardMaterial({ color: 0xd4d4d4, metalness: 0.75, roughness: 0.18 });
-  const darkMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.3, roughness: 0.6 });
-
-  // Hub centre disc
-  const hub = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 0.12, radius * 0.12, width + 0.02, 16),
-    rimMat
-  );
-  hub.rotation.z = Math.PI / 2;
-  group.add(hub);
-
-  // Outer barrel ring
-  const barrel = new THREE.Mesh(
-    new THREE.TorusGeometry(radius * 0.82, radius * 0.055, 10, 36),
-    rimMat
-  );
-  barrel.rotation.y = Math.PI / 2;
-  group.add(barrel);
-
-  // Centre face disc (fills gap between spokes)
-  const face = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 0.80, radius * 0.80, width * 0.25, 32),
-    darkMat
-  );
-  face.rotation.z = Math.PI / 2;
-  group.add(face);
-
-  // Spokes
-  const spokeLen = radius * 0.72;
-  const spokeGeom = new THREE.BoxGeometry(width * 0.5, radius * 0.08, spokeLen);
-  for (let i = 0; i < spokeCount; i++) {
-    const angle = (i / spokeCount) * Math.PI * 2;
-    const spoke = new THREE.Mesh(spokeGeom, rimMat);
-    spoke.rotation.x = angle;
-    spoke.position.set(0, Math.sin(angle) * spokeLen * 0.5, Math.cos(angle) * spokeLen * 0.5);
-    group.add(spoke);
+let fallbackWheelGeometry = null;
+function getFallbackWheelGeometry() {
+  if (!fallbackWheelGeometry) {
+    // One low-poly tyre, reused for all corners of all cars that fail to load.
+    const tyre = new THREE.CylinderGeometry(1, 1, 1, 16);
+    tyre.rotateZ(Math.PI / 2);
+    fallbackWheelGeometry = tyre;
   }
-
-  return group;
+  return fallbackWheelGeometry;
 }
 
-// ─── Tyre builder (tread lines on sidewall) ───────────────────────────────────
+let fallbackWheelMaterial = null;
+let fallbackBodyMaterial = null;
 
-function buildTyre(radius, width) {
-  const group = new THREE.Group();
-  const tireMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.75, metalness: 0 });
-  const treadMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9 });
-
-  // Main tyre cylinder
-  const tyre = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius, radius, width, 32),
-    tireMat
-  );
-  tyre.rotation.z = Math.PI / 2;
-  group.add(tyre);
-
-  // Sidewall tread stripes (thin rings)
-  const ringGeom = new THREE.TorusGeometry(radius * 0.93, radius * 0.025, 6, 32);
-  [-width * 0.28, width * 0.28].forEach((xOff) => {
-    const ring = new THREE.Mesh(ringGeom, treadMat);
-    ring.rotation.y = Math.PI / 2;
-    ring.position.x = xOff;
-    group.add(ring);
-  });
-
-  return group;
-}
-
-// ─── Wheel assembly (tyre + rim + pivot) ─────────────────────────────────────
-
-function buildWheelAssembly(radius, width) {
-  const pivot = new THREE.Group(); // steerable pivot
-  const spinGroup = new THREE.Group(); // spins with car speed
-  pivot.add(spinGroup);
-
-  const tyre = buildTyre(radius, width);
-  tyre.traverse((c) => { if (c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
-  spinGroup.add(tyre);
-
-  const rim = buildRim(radius, width);
-  rim.traverse((c) => { if (c.isMesh) c.castShadow = true; });
-  spinGroup.add(rim);
-
-  return { pivot, spinGroup };
-}
+// Scratch objects: the physics step must not allocate.
+const _v3a = new THREE.Vector3();
+const _v3b = new THREE.Vector3();
+const _box = new THREE.Box3();
+const _mat4 = new THREE.Matrix4();
 
 // ─── Vehicle ──────────────────────────────────────────────────────────────────
 
 export default class Vehicle {
   constructor(position = new THREE.Vector3(0, 0, 0), options = {}) {
     this.config = mergeVehicleConfig(defaultVehicleConfig, options);
-    const { geometry, dynamics, suspension, lights, model } = this.config;
+    const { geometry, dynamics, suspension, lights, model, effects } = this.config;
 
-    // ── Geometry
-    this.wheelBase   = geometry.wheelBase;   // front-to-rear axle distance
-    this.trackWidth  = geometry.trackWidth;  // lateral wheel centre distance
+    // ── Geometry (overwritten by real values once the GLB is measured)
+    this.wheelBase = geometry.wheelBase;
+    this.trackWidth = geometry.trackWidth;
     this.wheelRadius = geometry.wheelRadius;
-    this.wheelWidth  = geometry.wheelWidth;
-    this.cg_height   = geometry.cgHeight;    // centre-of-gravity height (for roll calc)
+    this.wheelWidth = geometry.wheelWidth;
+    this.cg_height = geometry.cgHeight;
+    this.bodyLength = model.bodyLength;
+    this.collisionRadius = model.bodyLength * 0.42;
+    this.bodyTop = 1.2;
+    this.bodyFront = model.bodyLength * 0.5;
 
     // ── Dynamics state
-    this.speed       = 0;      // m/s along forward axis (+Z = forward)
-    this.heading     = 0;      // world yaw (radians)
-    this.steerInput  = 0;      // accumulated [-1, 1]
-    this.steerAngle  = 0;      // front wheel steer (rad)
-    this.slipAngle   = 0;      // body slip (rad) — for drift feel
-    this.yawRate     = 0;      // current yaw rate (rad/s)
+    this.speed = 0;        // m/s along the chassis forward axis (+Z local)
+    this.heading = 0;      // world yaw of the velocity/chassis (rad)
+    this.steerInput = 0;   // [-1, 1]
+    this.steerAngle = 0;   // front wheel angle (rad)
+    this.slipAngle = 0;    // visual body yaw offset (rad) — drift look
+    this.yawRate = 0;
 
     // ── Tuning
-    this.maxSpeed      = dynamics.maxSpeed;                            // m/s (~65 km/h)
-    this.reverseSpeed  = dynamics.reverseSpeed;
-    this.accelRate     = dynamics.accelRate;                            // m/s² throttle
-    this.engineBrake   = dynamics.engineBrake;                           // coast decel
-    this.brakeRate     = dynamics.brakeRate;                            // hard brake
-    this.rollingDrag   = dynamics.rollingDrag;                          // speed-proportional drag
-    this.maxSteerDeg   = dynamics.maxSteerDeg;
-    this.maxSteer      = THREE.MathUtils.degToRad(this.maxSteerDeg);
-    this.steerSpeed    = dynamics.steerSpeed;                           // build rate (rad/s of input)
-    this.steerReturnHL = dynamics.steerReturnHalfLife;                          // half-life for self-centre
-    this.gripLimit     = dynamics.gripLimit;                            // m/s² lateral grip
-    this.slipFactor    = dynamics.slipFactor;                          // how much slip resists heading
+    this.maxSpeed = dynamics.maxSpeed;
+    this.reverseSpeed = dynamics.reverseSpeed;
+    this.accelRate = dynamics.accelRate;
+    this.engineBrake = dynamics.engineBrake;
+    this.brakeRate = dynamics.brakeRate;
+    this.handbrakeRate = dynamics.handbrakeRate;
+    this.rollingDrag = dynamics.rollingDrag;
+    this.maxSteerDeg = dynamics.maxSteerDeg;
+    this.maxSteer = THREE.MathUtils.degToRad(this.maxSteerDeg);
+    this.steerSpeed = dynamics.steerSpeed;
+    this.steerReturnHL = dynamics.steerReturnHalfLife;
+    this.gripLimit = dynamics.gripLimit;
+    this.slipFactor = dynamics.slipFactor;
 
     // ── Suspension
-    this.suspK          = suspension.spring;    // spring constant visual (multiplied by compression)
-    this.suspDamp       = suspension.dampingHalfLife;  // damping half-life (s)
-    this.suspRange      = suspension.travel;  // max travel (m)
-    this._suspComp      = { fl: 0, fr: 0, rl: 0, rr: 0 }; // current compression
-    this._suspVel       = { fl: 0, fr: 0, rl: 0, rr: 0 }; // compression velocity
+    this.suspK = suspension.spring;
+    this.suspDamp = suspension.dampingHalfLife;
+    this.suspRange = suspension.travel;
+    this._suspComp = { fl: 0, fr: 0, rl: 0, rr: 0 };
+    this._suspVel = { fl: 0, fr: 0, rl: 0, rr: 0 };
 
     // ── Internal state
-    this._prevSpeed    = 0;
-    this._longAcc      = 0;
-    this._latAcc       = 0;
-    this._bodyRoll     = 0;
-    this._bodyPitch    = 0;
-    this._wheelSpin    = 0;
-    this._skidding     = false;
-    this._braking      = false;
+    this._prevSpeed = 0;
+    this._longAcc = 0;
+    this._latAcc = 0;
+    this._bodyRoll = 0;
+    this._bodyPitch = 0;
+    this._wheelSpin = 0;
+    this._skidding = false;
+    this._braking = false;
+    this._handbraking = false;
 
     // ── Scene graph
-    this.group      = new THREE.Group();
+    this.group = new THREE.Group();
+    this.group.name = `vehicle:${model.id}`;
     this.group.position.copy(position);
-    this.bodyPivot  = new THREE.Group(); // roll / pitch pivot
+    this.bodyPivot = new THREE.Group(); // roll / pitch only
     this.group.add(this.bodyPivot);
 
-    this._placeholders = [];
-    this._headlights   = [];
-    this._tailLamps    = [];
-    this._brakeLamps   = [];
-    this._headlightTargets = [];
-    this._headlightBeams = [];
-    this._frontFills = [];
-    this._tailGlows = [];
     this._wheels = {};
-    this._exhaustWorldSpace = false;
-    this._placeholderBuilt = false;
-    this.lightMountTuning = {
-      frontX: lights.tuning.frontX,
-      frontY: lights.tuning.frontY,
-      frontZ: lights.tuning.frontZ,
-      rearX: lights.tuning.rearX,
-      rearY: lights.tuning.rearY,
-      rearZ: lights.tuning.rearZ,
-    };
-    this.modelPath = model.path;
-    this._lightFit = null;
+    this._modelRoot = null;
+    this._headlights = [];
+    this._tailLamps = [];
+    this._drls = [];
+    this._headlightBeams = [];
+    this._headlightTargets = [];
+    this._rearGlow = null;
+    this._hmsl = null;
+    this._reverseLight = null;
+    this._lampMaterials = null;
     this._lightSystemEnabled = true;
+    this._realtimeLights = lights.realtime !== false;
+    this._lampsEnabled = lights.lamps !== false;
+    this._lightFit = null;
+    this.lightMountTuning = { ...lights.tuning };
 
-    this._buildWheels();
-    this._buildLights();
-    this._buildExhaust();
-    this._loadModel();
+    this._exhaustCount = Math.max(0, effects.exhaustParticles | 0);
+    this._exhaustParticles = null;
+    this._exhaustWorldSpace = false;
+    this._exhaustOrigin = new THREE.Vector3(-0.35, 0.22, -2.18);
+
+    if (this._lampsEnabled) this._buildLamps();
+    if (this._exhaustCount > 0) this._buildExhaust();
+
+    /** Resolves once the GLB is in place (or the fallback body was built). */
+    this.ready = this._loadModel();
   }
 
-  // ── Placeholder body (shown before GLTF loads) ──────────────────────────────
+  /** Convenience factory: `const car = await Vehicle.create(pos, opts)`. */
+  static async create(position, options) {
+    const vehicle = new Vehicle(position, options);
+    await vehicle.ready;
+    return vehicle;
+  }
 
-  _buildPlaceholder() {
-    if (this._placeholderBuilt) return;
-    this._placeholderBuilt = true;
+  // ── Model ───────────────────────────────────────────────────────────────────
 
-    const bodyMat  = new THREE.MeshStandardMaterial({ color: 0x1f66c2, metalness: 0.3, roughness: 0.3 });
-    const trimMat  = new THREE.MeshStandardMaterial({ color: 0x0c0f16, metalness: 0.2, roughness: 0.45 });
-    const glassMat = new THREE.MeshStandardMaterial({ color: 0x1a2636, roughness: 0.08, metalness: 0.2, transparent: true, opacity: 0.65 });
-    const rimAccent = new THREE.MeshStandardMaterial({ color: 0x2255cc, metalness: 0.1, roughness: 0.6 });
+  async _loadModel() {
+    const path = modelPath(this.config.model.id);
+    try {
+      const model = await loadModel(path);
+      this._installModel(model);
+    } catch (err) {
+      console.warn(`[vehicle] ${path} failed to load, using fallback body.`, err);
+      this._buildFallbackBody();
+      this._buildFallbackWheels();
+      this._fitLampsToBounds(null);
+    }
+    return this;
+  }
 
-    const add = (geom, mat, x, y, z, ry = 0) => {
-      const m = new THREE.Mesh(geom, mat);
-      m.castShadow = true;
-      m.receiveShadow = true;
-      m.position.set(x, y, z);
-      m.rotation.y = ry;
-      this.bodyPivot.add(m);
-      this._placeholders.push(m);
-      return m;
+  _installModel(model) {
+    // Scale to the configured bumper-to-bumper length.
+    _box.setFromObject(model);
+    _box.getSize(_v3a);
+    const lengthAxis = Math.max(_v3a.z, 1e-3);
+    const scale = this.config.model.bodyLength / lengthAxis;
+    model.scale.setScalar(scale);
+
+    // Kenney models face +Z; rotate if the wheel nodes say otherwise.
+    model.rotation.y = this._computeForwardSign(model) > 0 ? 0 : Math.PI;
+    model.position.set(0, 0, 0);
+    model.updateMatrixWorld(true);
+
+    this.bodyPivot.add(model);
+    this._modelRoot = model;
+
+    const gotWheels = this._adoptModelWheels(model);
+    if (!gotWheels) this._buildFallbackWheels();
+
+    this._fitLampsToBounds(model);
+  }
+
+  /** +1 if the model's front wheels sit at +Z, -1 otherwise. */
+  _computeForwardSign(model) {
+    let front = 0;
+    let frontCount = 0;
+    let rear = 0;
+    let rearCount = 0;
+    model.traverse((node) => {
+      const name = (node.name || '').toLowerCase();
+      if (!name.includes('wheel')) return;
+      if (name.includes('front')) { front += node.position.z; frontCount++; }
+      else if (name.includes('back') || name.includes('rear')) { rear += node.position.z; rearCount++; }
+    });
+    if (!frontCount || !rearCount) return 1;
+    return front / frontCount >= rear / rearCount ? 1 : -1;
+  }
+
+  /**
+   * Re-parents the model's own wheel meshes onto steer/spin pivots.
+   *
+   * The previous version hid them and drew a procedural 12-mesh chrome rim per corner
+   * (48 extra meshes per car, clashing with the kit's flat-shaded look). Using the
+   * shipped wheels costs 4 meshes, shares the kit material, and — because we measure
+   * them — makes wheelbase, track width and wheel radius match the visible car.
+   */
+  _adoptModelWheels(model) {
+    const found = [];
+    model.updateWorldMatrix(true, true);
+    this.group.updateWorldMatrix(true, false);
+    _mat4.copy(this.group.matrixWorld).invert();
+
+    model.traverse((node) => {
+      if (!node.isMesh) return;
+      if (!(node.name || '').toLowerCase().includes('wheel')) return;
+      _box.setFromObject(node);
+      if (_box.isEmpty()) return;
+      _box.getCenter(_v3a).applyMatrix4(_mat4);
+      _box.getSize(_v3b);
+      found.push({
+        node,
+        x: _v3a.x,
+        y: _v3a.y,
+        z: _v3a.z,
+        radius: Math.max(_v3b.y, _v3b.z) * 0.5,
+        width: Math.max(_v3b.x, 0.02),
+      });
+    });
+
+    if (found.length < 4) return false;
+
+    // Classify by measured position, not by name: the model may have been flipped.
+    const zs = found.map((w) => w.z).sort((a, b) => a - b);
+    const zMid = zs[zs.length >> 1];
+    const pick = (isFront, isLeft) =>
+      found.filter((w) => (w.z >= zMid) === isFront && (w.x > 0) === isLeft);
+
+    const corners = {
+      fl: pick(true, true),
+      fr: pick(true, false),
+      rl: pick(false, true),
+      rr: pick(false, false),
     };
+    if (Object.values(corners).some((list) => list.length === 0)) return false;
 
-    // Lower hull — slightly tapered look with two layers
-    add(new THREE.BoxGeometry(2.02, 0.30, 4.0),  bodyMat,  0, 0.38, 0);
-    add(new THREE.BoxGeometry(1.90, 0.22, 3.75), rimAccent, 0, 0.55, 0); // mid-belt line
+    const avg = (list, key) => list.reduce((s, w) => s + w[key], 0) / list.length;
 
-    // Hood / bonnet — angled by scaling
-    const hoodGeom = new THREE.BoxGeometry(1.82, 0.18, 1.4);
-    add(hoodGeom, bodyMat, 0, 0.72, 1.05);
+    for (const [key, list] of Object.entries(corners)) {
+      const pivot = new THREE.Group();
+      pivot.name = `wheel-${key}`;
+      pivot.position.set(avg(list, 'x'), avg(list, 'y'), avg(list, 'z'));
+      this.group.add(pivot);
 
-    // Roof
-    add(new THREE.BoxGeometry(1.34, 0.14, 1.52), glassMat,  0, 1.14, -0.05);
+      const spinGroup = new THREE.Group();
+      pivot.add(spinGroup);
+      pivot.updateMatrixWorld(true);
 
-    // A-pillar pillars
-    [[-0.55, 0.98, 0.72], [0.55, 0.98, 0.72]].forEach(([x, y, z]) => {
-      add(new THREE.BoxGeometry(0.06, 0.38, 0.06), trimMat, x, y, z);
-    });
+      // `attach` preserves the world transform, so each wheel ends up centred
+      // on its own pivot regardless of the model's scale/rotation.
+      for (const w of list) spinGroup.attach(w.node);
 
-    // Cabin glass
-    add(new THREE.BoxGeometry(1.36, 0.52, 1.62), glassMat, 0, 0.96, -0.05);
+      this._wheels[key] = {
+        pivot,
+        spinGroup,
+        steerable: key === 'fl' || key === 'fr',
+        baseY: pivot.position.y,
+      };
+    }
 
-    // Front bumper
-    add(new THREE.BoxGeometry(2.10, 0.22, 0.26), trimMat, 0, 0.30, 2.06);
-    add(new THREE.BoxGeometry(2.06, 0.08, 0.12), rimAccent, 0, 0.22, 2.08); // lower lip
-
-    // Rear bumper + diffuser
-    add(new THREE.BoxGeometry(2.10, 0.22, 0.26), trimMat, 0, 0.30, -2.06);
-    add(new THREE.BoxGeometry(1.40, 0.10, 0.10), trimMat, 0, 0.18, -2.10); // diffuser
-
-    // Side skirts
-    [-1.04, 1.04].forEach((x) => {
-      add(new THREE.BoxGeometry(0.07, 0.18, 3.65), trimMat, x, 0.28, 0);
-    });
-
-    // Spoiler blade
-    add(new THREE.BoxGeometry(1.60, 0.08, 0.30), trimMat,  0, 0.85, -2.02);
-    add(new THREE.BoxGeometry(0.07, 0.25, 0.07), trimMat, -0.65, 0.74, -2.02);
-    add(new THREE.BoxGeometry(0.07, 0.25, 0.07), trimMat,  0.65, 0.74, -2.02);
+    // Adopt the real geometry so physics and visuals agree.
+    const radius = found.reduce((s, w) => s + w.radius, 0) / found.length;
+    const width = found.reduce((s, w) => s + w.width, 0) / found.length;
+    this.wheelRadius = radius;
+    this.wheelWidth = width;
+    this.wheelBase = Math.abs(avg(corners.fl, 'z') - avg(corners.rl, 'z')) || this.wheelBase;
+    this.trackWidth = Math.abs(avg(corners.fl, 'x') - avg(corners.fr, 'x')) || this.trackWidth;
+    return true;
   }
 
-  // ── Wheel assemblies ────────────────────────────────────────────────────────
-
-  _buildWheels() {
-    const r  = this.wheelRadius;
-    const w  = this.wheelWidth;
-    const wb = this.wheelBase;
-    const tw = this.trackWidth;
-
-    // Correct axle positions: front axle ~55% forward, rear axle ~55% back
-    const zF =  wb * 0.50;
-    const zR = -wb * 0.50;
-    const xL = -tw / 2;
-    const xR =  tw / 2;
-
+  _buildFallbackWheels() {
+    if (Object.keys(this._wheels).length) return;
+    if (!fallbackWheelMaterial) {
+      fallbackWheelMaterial = new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.8 });
+    }
+    const r = this.wheelRadius;
     const positions = {
-      fl: [xL, zF, true ],
-      fr: [xR, zF, true ],
-      rl: [xL, zR, false],
-      rr: [xR, zR, false],
+      fl: [this.trackWidth * 0.5, this.wheelBase * 0.5],
+      fr: [-this.trackWidth * 0.5, this.wheelBase * 0.5],
+      rl: [this.trackWidth * 0.5, -this.wheelBase * 0.5],
+      rr: [-this.trackWidth * 0.5, -this.wheelBase * 0.5],
     };
-
-    Object.entries(positions).forEach(([key, [x, z, steerable]]) => {
-      const { pivot, spinGroup } = buildWheelAssembly(r, w);
+    for (const [key, [x, z]] of Object.entries(positions)) {
+      const pivot = new THREE.Group();
       pivot.position.set(x, r, z);
       this.group.add(pivot);
-      this._wheels[key] = { pivot, spinGroup, steerable, baseY: r };
-    });
+      const spinGroup = new THREE.Group();
+      spinGroup.scale.set(this.wheelWidth, r, r);
+      pivot.add(spinGroup);
+      const mesh = new THREE.Mesh(getFallbackWheelGeometry(), fallbackWheelMaterial);
+      mesh.castShadow = true;
+      spinGroup.add(mesh);
+      this._wheels[key] = { pivot, spinGroup, steerable: z > 0, baseY: r };
+    }
   }
 
-  // ── Lighting ────────────────────────────────────────────────────────────────
+  _buildFallbackBody() {
+    if (!fallbackBodyMaterial) {
+      fallbackBodyMaterial = new THREE.MeshStandardMaterial({ color: 0x1f66c2, roughness: 0.4, metalness: 0.2 });
+    }
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.6, this.bodyLength * 0.92), fallbackBodyMaterial);
+    hull.position.y = 0.55;
+    hull.castShadow = true;
+    hull.receiveShadow = true;
+    this.bodyPivot.add(hull);
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.5, this.bodyLength * 0.4), fallbackBodyMaterial);
+    cabin.position.set(0, 1.05, -0.2);
+    cabin.castShadow = true;
+    this.bodyPivot.add(cabin);
+  }
 
-  _buildLights() {
-    // Headlight lens meshes
-    const headLensMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff, emissive: 0xfff5cc, emissiveIntensity: 7.2,
-      roughness: 0.05, metalness: 0.1,
-    });
-    // DRL strip (thin bar below headlight)
-    const drlMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 8,
-      roughness: 0.05,
-    });
-    // Tail / brake
-    const tailMat = new THREE.MeshStandardMaterial({
-      color: 0x660000, emissive: 0xcc0000, emissiveIntensity: 2.4,
-      roughness: 0.3,
-    });
-    const brakeMat = new THREE.MeshStandardMaterial({
-      color: 0xff0000, emissive: 0xff2200, emissiveIntensity: 6.0,
-      roughness: 0.2,
-    });
+  // ── Lamps & lights ──────────────────────────────────────────────────────────
 
-    [-0.55, 0.55].forEach((x, i) => {
-      // ── Front: lens + DRL
-      const lens = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.12, 0.06), headLensMat.clone());
-      lens.userData.onEmissiveIntensity = lens.material.emissiveIntensity;
-      lens.position.set(x, 0.62, 2.10);
-      this.bodyPivot.add(lens);
-      this._headlights.push(lens);
+  _buildLamps() {
+    // Materials are per-vehicle (each car toggles its own lights) but geometry is shared.
+    const m = {
+      head: new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff5cc, emissiveIntensity: 5.5, roughness: 0.1 }),
+      drl: new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xdff1ff, emissiveIntensity: 5, roughness: 0.1 }),
+      tail: new THREE.MeshStandardMaterial({ color: 0x4a0000, emissive: 0xcc1100, emissiveIntensity: 2.2, roughness: 0.3 }),
+      brake: new THREE.MeshStandardMaterial({ color: 0xff2200, emissive: 0xff2200, emissiveIntensity: 6, roughness: 0.2 }),
+      reverse: new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 3, roughness: 0.2 }),
+    };
+    this._lampMaterials = m;
+    this._tailBaseIntensity = m.tail.emissiveIntensity;
 
-      const drl = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.03, 0.05), drlMat.clone());
-      drl.position.set(x, 0.48, 2.10);
-      this.bodyPivot.add(drl);
-      this._placeholders.push(drl);
+    const addLamp = (geom, mat, list) => {
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      this.bodyPivot.add(mesh);
+      list?.push(mesh);
+      return mesh;
+    };
 
-      // Headlight beam (SpotLight)
+    for (let i = 0; i < 2; i++) {
+      addLamp(lampGeometry.head, m.head, this._headlights);
+      addLamp(lampGeometry.drl, m.drl, this._drls);
+      addLamp(lampGeometry.tail, m.tail, this._tailLamps);
+    }
+
+    this._hmsl = addLamp(lampGeometry.hmsl, m.brake);
+    this._hmsl.visible = false;
+    this._reverseLight = addLamp(lampGeometry.reverse, m.reverse);
+    this._reverseLight.visible = false;
+
+    if (this._realtimeLights) this._buildRealtimeLights();
+  }
+
+  /**
+   * Real lights are a *budget*, not a decoration. Each one adds a per-fragment loop
+   * iteration in every lit material, so only the player's car gets them: two
+   * headlight spots and a single shared rear point light instead of the previous
+   * seven lights per car (which were merely set to intensity 0 on rivals — still
+   * costing shader work).
+   */
+  _buildRealtimeLights() {
+    for (let i = 0; i < 2; i++) {
       const target = new THREE.Object3D();
-      target.position.set(x * 0.7, 0.1, 18);
       this.bodyPivot.add(target);
       this._headlightTargets.push(target);
 
-      const beam = new THREE.SpotLight(0xfff7d0, 5.4, 85, THREE.MathUtils.degToRad(24), 0.32, 1.05);
-      beam.userData.onIntensity = beam.intensity;
-      beam.position.set(x, 0.6, 2.15);
-      beam.target = target;
+      const beam = new THREE.SpotLight(0xfff7d0, 5.4, 70, THREE.MathUtils.degToRad(26), 0.35, 1.1);
       beam.castShadow = false;
+      beam.target = target;
+      beam.userData.onIntensity = beam.intensity;
       this.bodyPivot.add(beam);
       this._headlightBeams.push(beam);
+    }
 
-      // Small front point fill
-      const frontFill = new THREE.PointLight(0xfff5aa, 1.8, 16, 2);
-      frontFill.userData.onIntensity = frontFill.intensity;
-      frontFill.position.set(x, 0.55, 2.5);
-      this.bodyPivot.add(frontFill);
-      this._frontFills.push(frontFill);
+    this._rearGlow = new THREE.PointLight(0xff2200, 0.9, 7, 2);
+    this._rearGlow.userData.onIntensity = this._rearGlow.intensity;
+    this.bodyPivot.add(this._rearGlow);
+  }
 
-      // ── Rear: tail + brake (separate meshes, same position, different materials)
-      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.14, 0.07), tailMat.clone());
-      tail.userData.onEmissiveIntensity = tail.material.emissiveIntensity;
-      tail.position.set(x, 0.52, -2.10);
-      this.bodyPivot.add(tail);
-      this._tailLamps.push(tail);
+  /**
+   * Places the lamps from the body's bounding box.
+   *
+   * The old implementation copied every vertex of the body mesh into a `Vector3`
+   * array and ran four quantile passes over it. This walks the position attribute
+   * once, in place, to find the real width of the front/rear faces.
+   */
+  _fitLampsToBounds(model) {
+    if (!this._lampsEnabled) return;
 
-      const brake = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.10, 0.08), brakeMat.clone());
-      brake.position.set(x, 0.52, -2.10);
-      brake.visible = false; // shown only when braking
-      this.bodyPivot.add(brake);
-      this._brakeLamps.push(brake);
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    let bodyMesh = null;
 
-      // Tail glow light
-      const tailGlow = new THREE.PointLight(0xff2200, 0.8, 8, 2);
-      tailGlow.userData.onIntensity = tailGlow.intensity;
-      tailGlow.position.set(x, 0.48, -2.18);
-      this.bodyPivot.add(tailGlow);
-      this._tailGlows.push(tailGlow);
+    if (model) {
+      // Prefer the mesh actually called "body"; fall back to the first non-wheel mesh.
+      let fallback = null;
+      model.traverse((node) => {
+        if (!node.isMesh || bodyMesh) return;
+        const name = (node.name || '').toLowerCase();
+        if (name.includes('wheel')) return;
+        if (name === 'body') bodyMesh = node;
+        else if (!fallback) fallback = node;
+      });
+      bodyMesh = bodyMesh || fallback;
+    }
 
-      // High-mount centre brake light
-      if (i === 0) {
-        const hmsl = new THREE.Mesh(new THREE.BoxGeometry(0.60, 0.05, 0.06), brakeMat.clone());
-        hmsl.position.set(0, 1.06, -2.00);
-        hmsl.visible = false;
-        this.bodyPivot.add(hmsl);
-        this._hmsl = hmsl;
-        this._brakeLamps.push(hmsl);
+    this.bodyPivot.updateWorldMatrix(true, true);
+    const toBody = _mat4.copy(this.bodyPivot.matrixWorld).invert();
+
+    if (bodyMesh) {
+      bodyMesh.updateWorldMatrix(true, false);
+      const m = new THREE.Matrix4().copy(bodyMesh.matrixWorld).premultiply(toBody);
+      const pos = bodyMesh.geometry.attributes.position;
+      const e = m.elements;
+      for (let i = 0; i < pos.count; i++) {
+        const px = pos.getX(i), py = pos.getY(i), pz = pos.getZ(i);
+        const x = e[0] * px + e[4] * py + e[8] * pz + e[12];
+        const y = e[1] * px + e[5] * py + e[9] * pz + e[13];
+        const z = e[2] * px + e[6] * py + e[10] * pz + e[14];
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
       }
-    });
+    }
 
-    // Reverse light (white, rear centre)
-    const revMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 3, roughness: 0.2,
-    });
-    this._reverseLight = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.10, 0.06), revMat);
-    this._reverseLight.userData.onEmissiveIntensity = this._reverseLight.material.emissiveIntensity;
-    this._reverseLight.position.set(0, 0.40, -2.10);
-    this._reverseLight.visible = false;
-    this.bodyPivot.add(this._reverseLight);
+    if (!Number.isFinite(minX) || maxZ - minZ < 0.2) {
+      const halfLen = this.bodyLength * 0.5;
+      minX = -this.trackWidth * 0.55; maxX = this.trackWidth * 0.55;
+      minY = this.wheelRadius * 0.4; maxY = this.wheelRadius * 0.4 + 1.2;
+      minZ = -halfLen; maxZ = halfLen;
+    }
 
-    // Reverse point light
-    this._reversePL = new THREE.PointLight(0xffffff, 0, 6, 2);
-    this._reversePL.position.set(0, 0.38, -2.3);
-    this.bodyPivot.add(this._reversePL);
+    const halfWidth = (maxX - minX) * 0.5;
+    const height = maxY - minY;
+    const lampX = clamp(halfWidth * 0.66, this.trackWidth * 0.3, this.trackWidth * 0.52);
+    const lampY = minY + height * 0.38;
 
-    const frontAxleZ = this.wheelBase * 0.5;
-    const rearAxleZ = -this.wheelBase * 0.5;
-    this._setLightFit(
-      frontAxleZ + 0.36,
-      rearAxleZ - 0.40,
-      this.trackWidth * 0.40,
-      this.trackWidth * 0.40,
-      this.wheelRadius + 0.30,
-      this.wheelRadius + 0.26
-    );
+    // Anchor points for the hood camera; the kit models have no interior, so a
+    // true cockpit view would sit inside the body shell.
+    this.bodyTop = maxY;
+    this.bodyFront = maxZ;
+
+    this._lightFit = {
+      frontZ: maxZ - 0.03,
+      rearZ: minZ + 0.03,
+      frontLx: lampX,
+      rearLx: lampX,
+      frontY: lampY,
+      rearY: lampY,
+      topY: maxY,
+    };
+    this._applyLampTransforms();
     this.setLightSystemEnabled(this._lightSystemEnabled);
   }
 
-  _setLightFit(frontZ, rearZ, frontLx, rearLx, frontY, rearY) {
-    this._lightFit = { frontZ, rearZ, frontLx, rearLx, frontY, rearY };
-    this._alignLightAnchors(frontZ, rearZ, frontLx, rearLx, frontY, rearY);
+  _applyLampTransforms() {
+    const fit = this._lightFit;
+    if (!fit) return;
+    const t = this.lightMountTuning;
+    const fx = Math.abs(fit.frontLx + t.frontX);
+    const rx = Math.abs(fit.rearLx + t.rearX);
+    const fy = fit.frontY + t.frontY;
+    const ry = fit.rearY + t.rearY;
+    const fz = fit.frontZ + t.frontZ;
+    const rz = fit.rearZ + t.rearZ;
+
+    // i === 0 → left side (+X), see the coordinate note in README.
+    const side = (i) => (i === 0 ? fx : -fx);
+    const sideR = (i) => (i === 0 ? rx : -rx);
+
+    this._headlights.forEach((l, i) => l.position.set(side(i), fy, fz));
+    this._drls.forEach((l, i) => l.position.set(side(i), fy - 0.14, fz));
+    this._tailLamps.forEach((l, i) => l.position.set(sideR(i), ry, rz));
+    this._headlightBeams.forEach((b, i) => b.position.set(side(i), fy, fz + 0.05));
+    this._headlightTargets.forEach((tg, i) => tg.position.set(side(i) * 0.6, fy * 0.6, fz + 14));
+    if (this._hmsl) this._hmsl.position.set(0, Math.min(ry + 0.45, fit.topY - 0.05), rz + 0.02);
+    if (this._reverseLight) this._reverseLight.position.set(0, ry - 0.1, rz + 0.01);
+    if (this._rearGlow) this._rearGlow.position.set(0, ry, rz - 0.1);
   }
 
   updateLightMountTuning(patch = {}) {
-    this.lightMountTuning = { ...this.lightMountTuning, ...patch };
-    if (!this._lightFit) return;
-    const { frontZ, rearZ, frontLx, rearLx, frontY, rearY } = this._lightFit;
-    this._alignLightAnchors(frontZ, rearZ, frontLx, rearLx, frontY, rearY);
+    Object.assign(this.lightMountTuning, patch);
+    this._applyLampTransforms();
   }
 
-  setLightSystemEnabled(nextEnabled) {
-    this._lightSystemEnabled = !!nextEnabled;
-
-    this._headlightBeams.forEach((beam) => {
-      beam.intensity = this._lightSystemEnabled ? (beam.userData.onIntensity ?? 5.4) : 0;
-    });
-    this._frontFills.forEach((fill) => {
-      fill.intensity = this._lightSystemEnabled ? (fill.userData.onIntensity ?? 1.8) : 0;
-    });
-    this._headlights.forEach((mesh) => {
-      if (!mesh.material) return;
-      mesh.material.emissiveIntensity = this._lightSystemEnabled
-        ? (mesh.userData.onEmissiveIntensity ?? 7.2)
-        : 0.05;
-    });
-    this._tailLamps.forEach((mesh) => {
-      if (!mesh.material) return;
-      mesh.material.emissiveIntensity = this._lightSystemEnabled
-        ? (mesh.userData.onEmissiveIntensity ?? 2.4)
-        : 0.02;
-    });
-    this._tailGlows.forEach((glow) => {
-      glow.intensity = this._lightSystemEnabled ? (glow.userData.onIntensity ?? 0.8) : 0;
-    });
-    if (this._reverseLight?.material) {
-      this._reverseLight.material.emissiveIntensity = this._lightSystemEnabled
-        ? (this._reverseLight.userData.onEmissiveIntensity ?? 3)
-        : 0.02;
+  setLightSystemEnabled(next) {
+    this._lightSystemEnabled = !!next;
+    const on = this._lightSystemEnabled;
+    const m = this._lampMaterials;
+    if (m) {
+      m.head.emissiveIntensity = on ? 5.5 : 0.04;
+      m.drl.emissiveIntensity = on ? 5 : 0.04;
+      m.tail.emissiveIntensity = on ? this._tailBaseIntensity : 0.02;
+    }
+    for (const beam of this._headlightBeams) {
+      beam.intensity = on ? beam.userData.onIntensity : 0;
+      beam.visible = on;
+    }
+    if (this._rearGlow) {
+      this._rearGlow.intensity = on ? this._rearGlow.userData.onIntensity : 0;
+      this._rearGlow.visible = on;
     }
   }
 
@@ -454,588 +513,313 @@ export default class Vehicle {
     return this._lightSystemEnabled;
   }
 
-  _alignLightAnchors(frontZ, rearZ, frontLx, rearLx, frontY, rearY) {
-    const tune = this.lightMountTuning;
-    const frontX = Math.abs(frontLx + tune.frontX);
-    const rearX = Math.abs(rearLx + tune.rearX);
-    const fittedFrontY = frontY + tune.frontY;
-    const fittedRearY = rearY + tune.rearY;
-    const fittedFrontZ = frontZ + tune.frontZ;
-    const fittedRearZ = rearZ + tune.rearZ;
-    const rearFaceZ = fittedRearZ + 0.09;
-
-    this._headlights.forEach((l, i) => {
-      l.position.set(i === 0 ? -frontX : frontX, fittedFrontY, fittedFrontZ - 0.01);
-    });
-    this._headlightBeams.forEach((beam, i) => {
-      beam.position.set(i === 0 ? -frontX : frontX, fittedFrontY - 0.01, fittedFrontZ + 0.06);
-    });
-    this._frontFills.forEach((fill, i) => {
-      fill.position.set(i === 0 ? -frontX : frontX, fittedFrontY - 0.04, fittedFrontZ + 0.24);
-    });
-    this._tailLamps.forEach((l, i) => {
-      l.position.set(i === 0 ? -rearX : rearX, fittedRearY, rearFaceZ);
-    });
-    this._brakeLamps.forEach((l, i) => {
-      if (i < 2) l.position.set(i === 0 ? -rearX : rearX, fittedRearY, rearFaceZ + 0.005);
-    });
-    this._tailGlows.forEach((glow, i) => {
-      glow.position.set(i === 0 ? -rearX : rearX, fittedRearY - 0.02, rearFaceZ - 0.03);
-    });
-    if (this._hmsl) this._hmsl.position.set(0, fittedRearY + 0.36, rearFaceZ + 0.02);
-    this._reverseLight.position.set(0, fittedRearY - 0.06, rearFaceZ + 0.02);
-    this._reversePL.position.set(0, fittedRearY - 0.08, rearFaceZ - 0.05);
-    this._headlightTargets.forEach((t, i) => {
-      t.position.set(i === 0 ? -frontX * 0.60 : frontX * 0.60, fittedFrontY * 0.72, fittedFrontZ + 12);
-    });
-    if (this._exhaustOrigin) {
-      this._exhaustOrigin.set(-rearX * 0.64, fittedRearY - 0.10, rearFaceZ - 0.07);
-    }
-  }
-
-  _collectMeshVerticesInBodySpace(mesh) {
-    const pos = mesh?.geometry?.attributes?.position;
-    if (!pos || pos.count === 0) return [];
-
-    mesh.updateWorldMatrix(true, false);
-    this.bodyPivot.updateWorldMatrix(true, false);
-    const toBody = new THREE.Matrix4().copy(this.bodyPivot.matrixWorld).invert();
-    const transform = new THREE.Matrix4().copy(mesh.matrixWorld).premultiply(toBody);
-
-    const v = new THREE.Vector3();
-    const points = new Array(pos.count);
-    for (let i = 0; i < pos.count; i++) {
-      points[i] = v.fromBufferAttribute(pos, i).clone().applyMatrix4(transform);
-    }
-    return points;
-  }
-
-  _fitWheelsToModel(model) {
-    const wheelParts = [];
-    const tmpCenter = new THREE.Vector3();
-    const tmpSize = new THREE.Vector3();
-
-    model.updateWorldMatrix(true, true);
-    this.bodyPivot.updateWorldMatrix(true, true);
-    const toBody = new THREE.Matrix4().copy(this.bodyPivot.matrixWorld).invert();
-
-    model.traverse((node) => {
-      if (!node.isMesh) return;
-      const n = (node.name || '').toLowerCase();
-      if (!n.includes('wheel') && !n.includes('tyre') && !n.includes('tire') && !n.includes('rim')) return;
-
-      const box = new THREE.Box3().setFromObject(node);
-      if (box.isEmpty()) return;
-
-      box.getCenter(tmpCenter);
-      box.getSize(tmpSize);
-      const center = tmpCenter.clone().applyMatrix4(toBody);
-      const dims = [Math.abs(tmpSize.x), Math.abs(tmpSize.y), Math.abs(tmpSize.z)].sort((a, b) => a - b);
-
-      wheelParts.push({
-        x: center.x,
-        z: center.z,
-        width: Math.max(0.05, dims[0]),
-        radius: Math.max(0.05, dims[2] * 0.5),
-      });
-    });
-
-    if (wheelParts.length < 4) return false;
-
-    const sortedZ = wheelParts.map((p) => p.z).sort((a, b) => a - b);
-    const zMedian = sortedZ[Math.floor(sortedZ.length * 0.5)];
-    const fl = wheelParts.filter((p) => p.z >= zMedian && p.x < 0);
-    const fr = wheelParts.filter((p) => p.z >= zMedian && p.x >= 0);
-    const rl = wheelParts.filter((p) => p.z < zMedian && p.x < 0);
-    const rr = wheelParts.filter((p) => p.z < zMedian && p.x >= 0);
-    if (!fl.length || !fr.length || !rl.length || !rr.length) return false;
-
-    const avg = (arr, key) => arr.reduce((sum, v) => sum + v[key], 0) / arr.length;
-    const frontZ = (avg(fl, 'z') + avg(fr, 'z')) * 0.5;
-    const rearZ = (avg(rl, 'z') + avg(rr, 'z')) * 0.5;
-    const leftX = (avg(fl, 'x') + avg(rl, 'x')) * 0.5;
-    const rightX = (avg(fr, 'x') + avg(rr, 'x')) * 0.5;
-
-    const avgRadius = avg(wheelParts, 'radius');
-    const avgWidth = avg(wheelParts, 'width');
-    const fittedRadius = THREE.MathUtils.clamp(avgRadius, this.wheelRadius * 0.72, this.wheelRadius * 1.45);
-    const fittedWidth = THREE.MathUtils.clamp(avgWidth, this.wheelWidth * 0.55, this.wheelWidth * 1.65);
-    const radialScale = fittedRadius / this.wheelRadius;
-    const widthScale = fittedWidth / this.wheelWidth;
-
-    const fitted = {
-      fl: { x: leftX, z: frontZ },
-      fr: { x: rightX, z: frontZ },
-      rl: { x: leftX, z: rearZ },
-      rr: { x: rightX, z: rearZ },
-    };
-
-    Object.entries(fitted).forEach(([key, pos]) => {
-      const wheel = this._wheels[key];
-      if (!wheel) return;
-      wheel.pivot.position.x = pos.x;
-      wheel.pivot.position.z = pos.z;
-      wheel.baseY = fittedRadius;
-      wheel.pivot.position.y = wheel.baseY - (this._suspComp[key] || 0);
-      wheel.spinGroup.scale.set(widthScale, radialScale, radialScale);
-    });
-
-    return true;
-  }
-
-  _computeForwardSignFromWheelNodes(model) {
-    let frontAvg = 0;
-    let rearAvg = 0;
-    let frontCount = 0;
-    let rearCount = 0;
-
-    model.traverse((c) => {
-      const n = (c.name || '').toLowerCase();
-      if (!n.includes('wheel')) return;
-      if (n.includes('front')) {
-        frontAvg += c.position.z;
-        frontCount += 1;
-      } else if (n.includes('back') || n.includes('rear')) {
-        rearAvg += c.position.z;
-        rearCount += 1;
-      }
-    });
-
-    if (frontCount === 0 || rearCount === 0) return 1;
-    frontAvg /= frontCount;
-    rearAvg /= rearCount;
-    return frontAvg >= rearAvg ? 1 : -1;
-  }
-
-  _fitLightsToModel(model) {
-    let bodyRef = null;
-    model.traverse((c) => {
-      if (bodyRef || !c.isMesh) return;
-      const n = (c.name || '').toLowerCase();
-      if (n === 'body' || n.includes('body')) bodyRef = c;
-    });
-
-    const source = bodyRef || model;
-    const points = bodyRef ? this._collectMeshVerticesInBodySpace(bodyRef) : [];
-
-    let minX = Infinity;
-    let minY = Infinity;
-    let minZ = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    let maxZ = -Infinity;
-
-    const pushBounds = (x, y, z) => {
-      minX = Math.min(minX, x);
-      minY = Math.min(minY, y);
-      minZ = Math.min(minZ, z);
-      maxX = Math.max(maxX, x);
-      maxY = Math.max(maxY, y);
-      maxZ = Math.max(maxZ, z);
-    };
-
-    if (points.length > 0) {
-      points.forEach((p) => pushBounds(p.x, p.y, p.z));
-    } else {
-      source.updateWorldMatrix(true, true);
-      this.bodyPivot.updateWorldMatrix(true, true);
-      const box = new THREE.Box3().setFromObject(source);
-      box.applyMatrix4(new THREE.Matrix4().copy(this.bodyPivot.matrixWorld).invert());
-      pushBounds(box.min.x, box.min.y, box.min.z);
-      pushBounds(box.max.x, box.max.y, box.max.z);
-    }
-
-    const sizeX = maxX - minX;
-    const sizeY = maxY - minY;
-    const sizeZ = maxZ - minZ;
-    if (sizeX < 0.2 || sizeY < 0.2 || sizeZ < 0.2) return false;
-
-    const frontBandStart = maxZ - sizeZ * 0.08;
-    const rearBandEnd = minZ + sizeZ * 0.08;
-    const lampYMin = minY + sizeY * 0.20;
-    const lampYMax = minY + sizeY * 0.44;
-
-    const srcPoints = points.length > 0 ? points : [
-      new THREE.Vector3(minX, minY, minZ),
-      new THREE.Vector3(maxX, maxY, maxZ),
-      new THREE.Vector3(minX, maxY, maxZ),
-      new THREE.Vector3(maxX, minY, minZ),
-    ];
-
-    const frontCandidates = srcPoints.filter(
-      (p) => p.z >= frontBandStart && p.y >= lampYMin && p.y <= lampYMax
-    );
-    const rearCandidates = srcPoints.filter(
-      (p) => p.z <= rearBandEnd && p.y >= lampYMin && p.y <= lampYMax
-    );
-
-    const frontSet = frontCandidates.length >= 6 ? frontCandidates : srcPoints.filter((p) => p.z >= frontBandStart);
-    const rearSet = rearCandidates.length >= 6 ? rearCandidates : srcPoints.filter((p) => p.z <= rearBandEnd);
-    if (!frontSet.length || !rearSet.length) return false;
-
-    const frontLx = THREE.MathUtils.clamp(
-      quantile(frontSet.map((p) => Math.abs(p.x)), 0.66),
-      this.trackWidth * 0.34,
-      this.trackWidth * 0.70
-    );
-    const rearLx = THREE.MathUtils.clamp(
-      quantile(rearSet.map((p) => Math.abs(p.x)), 0.66),
-      this.trackWidth * 0.34,
-      this.trackWidth * 0.70
-    );
-
-    const frontY = quantile(frontSet.map((p) => p.y), 0.40);
-    const rearY = quantile(rearSet.map((p) => p.y), 0.40);
-    const frontZ = quantile(frontSet.map((p) => p.z), 0.74);
-    const rearZ = quantile(rearSet.map((p) => p.z), 0.30);
-
-    this._setLightFit(frontZ, rearZ, frontLx, rearLx, frontY, rearY);
-    return true;
-  }
-
-  // ── Exhaust particles ────────────────────────────────────────────────────────
+  // ── Exhaust ─────────────────────────────────────────────────────────────────
 
   _buildExhaust() {
-    const N = 60;
-    this._exhaustPositions = new Float32Array(N * 3);
-    this._exhaustLifetimes = new Float32Array(N);
-    this._exhaustSpeeds    = new Float32Array(N * 3);
-    this._exhaustN         = N;
-    for (let i = 0; i < N; i++) this._exhaustLifetimes[i] = Math.random(); // stagger
+    const n = this._exhaustCount;
+    this._exhaustPositions = new Float32Array(n * 3);
+    this._exhaustVelocities = new Float32Array(n * 3);
+    this._exhaustLifetimes = new Float32Array(n);
+    for (let i = 0; i < n; i++) this._exhaustLifetimes[i] = Math.random();
 
     const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.BufferAttribute(this._exhaustPositions, 3));
+    geom.setAttribute('position', new THREE.BufferAttribute(this._exhaustPositions, 3).setUsage(THREE.DynamicDrawUsage));
 
-    const mat = new THREE.PointsMaterial({
-      color: 0xaaaaaa,
-      size: 0.09,
-      transparent: true,
-      opacity: 0.28,
-      depthWrite: false,
-      sizeAttenuation: true,
-    });
-
-    this._exhaustParticles = new THREE.Points(geom, mat);
-    this._exhaustParticles.frustumCulled = false;
-    this.group.add(this._exhaustParticles);
-
-    // Exhaust pipe position in local space (rear, slightly offset)
-    this._exhaustOrigin = new THREE.Vector3(-0.35, 0.22, -2.18);
-  }
-
-  // ── GLTF model loader ────────────────────────────────────────────────────────
-
-  _loadModel() {
-    const loader = new GLTFLoader();
-    loader.load(
-      encodeURI(this.modelPath),
-      (gltf) => {
-        const model = gltf.scene;
-
-        // Scale to physics body length
-        const bb = new THREE.Box3().setFromObject(model);
-        const size = new THREE.Vector3();
-        bb.getSize(size);
-        const scale = (this.wheelBase * 1.46) / size.z;
-        model.scale.setScalar(scale);
-        model.position.set(0, 0, 0);
-        model.rotation.y = this._computeForwardSignFromWheelNodes(model) > 0 ? 0 : Math.PI;
-
-        model.traverse((c) => {
-          if (c.isMesh) {
-            c.castShadow = true;
-            c.receiveShadow = true;
-            // Hide model's own wheels — ours are authoritative
-            const n = c.name.toLowerCase();
-            if (n.includes('wheel') || n.includes('tyre') || n.includes('tire') || n.includes('rim')) {
-              c.visible = false;
-            }
-          }
-        });
-
-        this.bodyPivot.add(model);
-        this._fitWheelsToModel(model);
-
-        // Remove placeholder geometry
-        this._placeholders.forEach((p) => {
-          this.bodyPivot.remove(p);
-          p.geometry?.dispose();
-          [p.material].flat().forEach((m) => m?.dispose());
-        });
-        this._placeholders = [];
-        const fitted = this._fitLightsToModel(model);
-        if (!fitted) {
-          const frontAxleZ = this.wheelBase * 0.5;
-          const rearAxleZ = -this.wheelBase * 0.5;
-          this._setLightFit(
-            frontAxleZ + 0.46,
-            rearAxleZ - 0.40,
-            this.trackWidth * 0.40,
-            this.trackWidth * 0.40,
-            this.wheelRadius + 0.20,
-            this.wheelRadius + 0.16
-          );
-        }
-      },
-      undefined,
-      (err) => {
-        console.warn('Model load failed:', err);
-        this._buildPlaceholder();
-      }
+    this._exhaustParticles = new THREE.Points(
+      geom,
+      new THREE.PointsMaterial({
+        color: 0xaaaaaa,
+        size: 0.1,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+        sizeAttenuation: true,
+      })
     );
+    this._exhaustParticles.frustumCulled = false;
+    this._exhaustParticles.renderOrder = 2;
+    this.group.add(this._exhaustParticles);
   }
 
-  // ── Steering ─────────────────────────────────────────────────────────────────
+  _placeExhaustOrigin() {
+    const fit = this._lightFit;
+    if (!fit) return;
+    this._exhaustOrigin.set(-fit.rearLx * 0.6, Math.max(0.12, fit.rearY - 0.18), fit.rearZ - 0.05);
+  }
+
+  _updateExhaust(dt) {
+    const particles = this._exhaustParticles;
+    if (!particles) return;
+
+    const n = this._exhaustCount;
+    const pos = this._exhaustPositions;
+    const vel = this._exhaustVelocities;
+    const life = this._exhaustLifetimes;
+    const speedNorm = Math.abs(this.speed) / this.maxSpeed;
+    const target = speedNorm > 0.03 || this._braking ? Math.min(0.32, speedNorm * 0.4) : 0;
+    particles.material.opacity = expLerp(particles.material.opacity, target, 0.15, dt);
+
+    if (particles.material.opacity < 0.003 && target === 0) return;
+
+    // Keep the trail in world space so smoke does not stick to the body.
+    if (!this._exhaustWorldSpace && this.group.parent) {
+      this.group.parent.attach(particles);
+      this._exhaustWorldSpace = true;
+    }
+
+    this.group.updateMatrixWorld(true);
+    _v3a.copy(this._exhaustOrigin).applyMatrix4(this.group.matrixWorld);
+    const sinH = Math.sin(this.heading);
+    const cosH = Math.cos(this.heading);
+
+    for (let i = 0; i < n; i++) {
+      const i3 = i * 3;
+      life[i] -= dt * 1.8;
+      if (life[i] <= 0) {
+        life[i] = 1;
+        pos[i3] = _v3a.x + (Math.random() - 0.5) * 0.06;
+        pos[i3 + 1] = _v3a.y;
+        pos[i3 + 2] = _v3a.z + (Math.random() - 0.5) * 0.06;
+        const spd = 0.6 + Math.random() * 0.4;
+        vel[i3] = -sinH * spd + (Math.random() - 0.5) * 0.2;
+        vel[i3 + 1] = 0.15 + Math.random() * 0.15;
+        vel[i3 + 2] = -cosH * spd + (Math.random() - 0.5) * 0.2;
+      }
+      pos[i3] += vel[i3] * dt;
+      pos[i3 + 1] += vel[i3 + 1] * dt;
+      pos[i3 + 2] += vel[i3 + 2] * dt;
+    }
+    particles.geometry.attributes.position.needsUpdate = true;
+  }
+
+  // ── Steering ────────────────────────────────────────────────────────────────
 
   _updateSteering(dt, keys) {
-    const left  = keys.has('ArrowLeft')  || keys.has('KeyA');
+    const left = keys.has('ArrowLeft') || keys.has('KeyA');
     const right = keys.has('ArrowRight') || keys.has('KeyD');
-    const dir   = (left ? 1 : 0) - (right ? 1 : 0);
+    const dir = (left ? 1 : 0) - (right ? 1 : 0);
 
     if (dir !== 0) {
       this.steerInput = clampAbs(this.steerInput + dir * this.steerSpeed * dt, 1);
     } else {
-      // Exponential self-centering (frame-rate independent)
       this.steerInput = expLerp(this.steerInput, 0, this.steerReturnHL, dt);
       if (Math.abs(this.steerInput) < 0.002) this.steerInput = 0;
     }
 
-    // Speed-sensitive steer reduction: narrows at high speed
-    const speedRatio   = clampAbs(Math.abs(this.speed) / this.maxSpeed, 1);
-    const steerLimit   = THREE.MathUtils.lerp(this.maxSteer, this.maxSteer * 0.32, speedRatio * speedRatio);
-    this.steerAngle    = this.steerInput * steerLimit;
+    const speedRatio = Math.min(Math.abs(this.speed) / this.maxSpeed, 1);
+    const steerLimit = THREE.MathUtils.lerp(this.maxSteer, this.maxSteer * 0.32, speedRatio * speedRatio);
+    this.steerAngle = this.steerInput * steerLimit;
   }
 
-  // ── Speed / throttle ─────────────────────────────────────────────────────────
+  // ── Speed ───────────────────────────────────────────────────────────────────
 
   _updateSpeed(dt, keys) {
-    const throttle = keys.has('ArrowUp')   || keys.has('KeyW');
-    const braking  = keys.has('ArrowDown') || keys.has('KeyS');
-    this._braking  = braking;
+    const throttle = keys.has('ArrowUp') || keys.has('KeyW');
+    const braking = keys.has('ArrowDown') || keys.has('KeyS');
+    const handbrake = keys.has('Space');
+    this._braking = braking;
+    this._handbraking = handbrake;
 
-    if (throttle) {
+    if (handbrake) {
+      const decel = this.handbrakeRate * dt;
+      this.speed = Math.abs(this.speed) <= decel ? 0 : this.speed - Math.sign(this.speed) * decel;
+    } else if (throttle) {
       this.speed += this.accelRate * dt;
     } else if (braking) {
-      if (this.speed > 0.1) {
-        // Hard brake
-        this.speed -= this.brakeRate * dt;
-      } else {
-        // Reverse
-        this.speed -= this.accelRate * 0.6 * dt;
-      }
+      if (this.speed > 0.1) this.speed -= this.brakeRate * dt;
+      else this.speed -= this.accelRate * 0.6 * dt;
     } else {
-      // Engine braking + rolling resistance
-      const engineBrakeForce = this.engineBrake + Math.abs(this.speed) * this.rollingDrag;
-      this.speed -= Math.sign(this.speed) * engineBrakeForce * dt;
+      const drag = this.engineBrake + Math.abs(this.speed) * this.rollingDrag;
+      this.speed -= Math.sign(this.speed) * drag * dt;
     }
 
-    // Deadband
     if (Math.abs(this.speed) < 0.04) this.speed = 0;
-    this.speed = THREE.MathUtils.clamp(this.speed, -this.reverseSpeed, this.maxSpeed);
+    this.speed = clamp(this.speed, -this.reverseSpeed, this.maxSpeed);
 
-    // Longitudinal acceleration for body pitch
     this._longAcc = (this.speed - this._prevSpeed) / Math.max(dt, 1e-4);
     this._prevSpeed = this.speed;
 
-    // Lights: brake / reverse
-    const showBrake   = braking && this.speed > -0.5;
+    // Lamp states
+    const showBrake = (braking || handbrake) && this.speed > -0.5;
     const showReverse = this.speed < -0.35;
-    this._brakeLamps.forEach((l) => { l.visible = showBrake; });
-    this._reverseLight.visible      = this._lightSystemEnabled && showReverse;
-    this._reversePL.intensity       = this._lightSystemEnabled && showReverse ? 1.5 : 0;
+    if (this._lampMaterials) {
+      this._lampMaterials.tail.emissiveIntensity = this._lightSystemEnabled
+        ? (showBrake ? 7 : this._tailBaseIntensity)
+        : (showBrake ? 5 : 0.02);
+      if (this._hmsl) this._hmsl.visible = showBrake;
+      if (this._reverseLight) this._reverseLight.visible = showReverse;
+    }
+    if (this._rearGlow && this._lightSystemEnabled) {
+      this._rearGlow.intensity = showBrake ? 2.6 : this._rearGlow.userData.onIntensity;
+    }
   }
 
-  // ── Ackermann steering angles ─────────────────────────────────────────────────
+  // ── Ackermann ───────────────────────────────────────────────────────────────
 
+  /**
+   * Positive steer = left turn. With forward = +Z and up = +Y the car's left side is
+   * at +X, so `fl`/`rl` are the +X wheels and the *left* wheel is the inner one in a
+   * left-hand corner. (The previous code handed `inner` to the -X wheel, giving the
+   * outer wheel the larger angle.)
+   */
   _computeAckermann() {
     const steer = this.steerAngle;
-    if (Math.abs(steer) < 1e-4) return { fl: 0, fr: 0 };
-
-    const s   = Math.sign(steer);
+    if (Math.abs(steer) < 1e-4) return { left: 0, right: 0 };
     const abs = Math.abs(steer);
-    const R   = this.wheelBase / Math.tan(abs);   // turning radius to rear axle
-    const tw  = this.trackWidth / 2;
-
-    const inner = Math.atan(this.wheelBase / (R - tw));
-    const outer = Math.atan(this.wheelBase / (R + tw));
-
-    return s > 0
-      ? { fl:  inner, fr:  outer }  // turning left
-      : { fl: -outer, fr: -inner }; // turning right
+    const R = this.wheelBase / Math.tan(abs);
+    const halfTrack = this.trackWidth * 0.5;
+    const inner = Math.atan(this.wheelBase / Math.max(R - halfTrack, 0.05));
+    const outer = Math.atan(this.wheelBase / (R + halfTrack));
+    return steer > 0 ? { left: inner, right: outer } : { left: -outer, right: -inner };
   }
 
-  // ── Dynamics: slip-angle yaw model ───────────────────────────────────────────
+  // ── Pose ────────────────────────────────────────────────────────────────────
 
   _updatePose(dt) {
     if (Math.abs(this.speed) < 0.002) {
-      // Relax body angles at rest
-      this._bodyRoll  = expLerp(this._bodyRoll,  0, 0.08, dt);
+      this._bodyRoll = expLerp(this._bodyRoll, 0, 0.08, dt);
       this._bodyPitch = expLerp(this._bodyPitch, 0, 0.08, dt);
-      this.yawRate    = 0;
-      this.slipAngle  = 0;
+      this.slipAngle = expLerp(this.slipAngle, 0, 0.1, dt);
+      this.yawRate = 0;
+      this._latAcc = 0;
       this.bodyPivot.rotation.z = this._bodyRoll;
       this.bodyPivot.rotation.x = this._bodyPitch;
+      this.group.rotation.y = this.heading + this.slipAngle;
       return;
     }
 
-    // Desired yaw rate from bicycle model
+    // Bicycle model yaw rate
     const desiredYaw = (this.speed * Math.tan(this.steerAngle)) / this.wheelBase;
-
-    // Lateral acceleration from centripetal (v * omega) — correct formula
     const rawLatAcc = this.speed * desiredYaw;
-    this._latAcc    = rawLatAcc;
+    this._latAcc = rawLatAcc;
 
-    // Grip clamp: reduce yaw if over limit (tyre saturation → understeer)
-    let clampedYaw = desiredYaw;
-    if (Math.abs(rawLatAcc) > this.gripLimit) {
-      clampedYaw = (this.gripLimit * Math.sign(rawLatAcc)) / Math.max(Math.abs(this.speed), 0.1);
-      this._latAcc = this.gripLimit * Math.sign(rawLatAcc);
-      // Speed bleeds more on oversteer (rear-drive feel)
-      this.speed *= Math.pow(0.992, 60 * dt);
+    let yaw = desiredYaw;
+    const gripLimit = this._handbraking ? this.gripLimit * 0.55 : this.gripLimit;
+    if (Math.abs(rawLatAcc) > gripLimit) {
+      yaw = (gripLimit * Math.sign(rawLatAcc)) / Math.max(Math.abs(this.speed), 0.1);
+      this._latAcc = gripLimit * Math.sign(rawLatAcc);
+      this.speed *= Math.pow(0.992, 60 * dt); // tyres scrub speed when saturated
       this._skidding = true;
     } else {
       this._skidding = false;
     }
 
-    // Slip angle: body orientation lags behind velocity direction slightly
-    const targetSlip = this.steerAngle * this.slipFactor * (Math.abs(this.speed) / this.maxSpeed);
-    this.slipAngle   = expLerp(this.slipAngle, targetSlip, 0.12, dt);
+    // `heading` is the travel direction; `slipAngle` is only a visual yaw offset, so
+    // integrating it as if it were a rate (as before) is a units error.
+    this.yawRate = yaw;
+    this.heading += yaw * dt;
 
-    // Integrate yaw
-    this.yawRate  = clampedYaw;
-    this.heading += (this.yawRate + this.slipAngle) * dt;
-    this.group.rotation.y = this.heading;
+    const targetSlip = this.steerAngle * this.slipFactor * (Math.abs(this.speed) / this.maxSpeed)
+      * (this._handbraking ? 2.2 : 1);
+    this.slipAngle = expLerp(this.slipAngle, targetSlip, 0.12, dt);
 
-    // Translate along velocity direction (heading + slip = actual travel direction)
-    const travelDir = this.heading - this.slipAngle * 0.5;
-    const fwd = new THREE.Vector3(Math.sin(travelDir), 0, Math.cos(travelDir));
-    this.group.position.addScaledVector(fwd, this.speed * dt);
+    this.group.rotation.y = this.heading + this.slipAngle;
 
-    // Body roll — proportional to lateral g, relative to CG height
-    const targetRoll  = -(this._latAcc / 9.81) * (this.cg_height / this.trackWidth) * 0.7;
+    const sinH = Math.sin(this.heading);
+    const cosH = Math.cos(this.heading);
+    this.group.position.x += sinH * this.speed * dt;
+    this.group.position.z += cosH * this.speed * dt;
+
+    const targetRoll = -(this._latAcc / 9.81) * (this.cg_height / this.trackWidth) * 0.7;
     const targetPitch = -(this._longAcc / 9.81) * 0.018;
-
-    this._bodyRoll  = expLerp(this._bodyRoll,  targetRoll,  0.06, dt);
+    this._bodyRoll = expLerp(this._bodyRoll, targetRoll, 0.06, dt);
     this._bodyPitch = expLerp(this._bodyPitch, targetPitch, 0.07, dt);
-
-    this.bodyPivot.rotation.z = clampAbs(this._bodyRoll,  0.10);
+    this.bodyPivot.rotation.z = clampAbs(this._bodyRoll, 0.1);
     this.bodyPivot.rotation.x = clampAbs(this._bodyPitch, 0.07);
   }
 
-  // ── Suspension simulation ────────────────────────────────────────────────────
+  // ── Suspension ──────────────────────────────────────────────────────────────
 
   _updateSuspension(dt) {
-    // Compute per-corner load transfer
     const longTransfer = (this._longAcc / 9.81) * this.cg_height / this.wheelBase;
-    const latTransfer  = (this._latAcc  / 9.81) * this.cg_height / this.trackWidth;
+    const latTransfer = (this._latAcc / 9.81) * this.cg_height / this.trackWidth;
 
-    const targets = {
-      fl:  longTransfer - latTransfer,
-      fr:  longTransfer + latTransfer,
-      rl: -longTransfer - latTransfer,
-      rr: -longTransfer + latTransfer,
-    };
-
-    Object.keys(this._wheels).forEach((key) => {
-      const w = this._wheels[key];
-      const targetComp = clampAbs(targets[key] * this.suspRange, this.suspRange);
-
-      // Spring-damper (critically damped feel)
-      const vel  = this._suspVel[key] || 0;
-      const comp = this._suspComp[key] || 0;
-      const force = -this.suspK * (comp - targetComp) - vel / this.suspDamp;
-      const newVel  = vel + force * dt;
-      const newComp = comp + newVel * dt;
-
-      this._suspVel[key]  = newVel;
-      this._suspComp[key] = clampAbs(newComp, this.suspRange);
-
-      // Apply Y offset to wheel pivot
-      w.pivot.position.y = w.baseY - this._suspComp[key];
-    });
+    this._applyCorner('fl', longTransfer - latTransfer, dt);
+    this._applyCorner('fr', longTransfer + latTransfer, dt);
+    this._applyCorner('rl', -longTransfer - latTransfer, dt);
+    this._applyCorner('rr', -longTransfer + latTransfer, dt);
   }
 
-  // ── Wheel steering + spin ────────────────────────────────────────────────────
+  _applyCorner(key, transfer, dt) {
+    const wheel = this._wheels[key];
+    if (!wheel) return;
+    const targetComp = clampAbs(transfer * this.suspRange, this.suspRange);
+    const vel = this._suspVel[key];
+    const comp = this._suspComp[key];
+    const force = -this.suspK * (comp - targetComp) - vel / this.suspDamp;
+    const newVel = vel + force * dt;
+    this._suspVel[key] = newVel;
+    this._suspComp[key] = clampAbs(comp + newVel * dt, this.suspRange);
+    wheel.pivot.position.y = wheel.baseY - this._suspComp[key];
+  }
+
+  // ── Wheels ──────────────────────────────────────────────────────────────────
 
   _updateWheels(dt) {
-    const { fl, fr } = this._computeAckermann();
-    this._wheels.fl.pivot.rotation.y = fl;
-    this._wheels.fr.pivot.rotation.y = fr;
+    const { left, right } = this._computeAckermann();
+    if (this._wheels.fl) this._wheels.fl.pivot.rotation.y = left;
+    if (this._wheels.fr) this._wheels.fr.pivot.rotation.y = right;
 
-    const spinDelta = (this.speed / this.wheelRadius) * dt;
-    this._wheelSpin += spinDelta;
+    // Locked wheels during a handbrake slide stop spinning.
+    const spinSpeed = this._handbraking ? this.speed * 0.15 : this.speed;
+    this._wheelSpin += (spinSpeed / Math.max(this.wheelRadius, 0.05)) * dt;
 
-    Object.values(this._wheels).forEach(({ spinGroup }) => {
-      spinGroup.rotation.x = this._wheelSpin;
-    });
+    for (const key in this._wheels) {
+      this._wheels[key].spinGroup.rotation.x = this._wheelSpin;
+    }
   }
 
-  // ── Exhaust particle update ───────────────────────────────────────────────────
-
-  _updateExhaust(dt) {
-    const N       = this._exhaustN;
-    const pos     = this._exhaustPositions;
-    const life    = this._exhaustLifetimes;
-    const vel     = this._exhaustSpeeds;
-    const origin  = this._exhaustOrigin;
-    const emit    = Math.abs(this.speed) > 0.5 || this._braking;
-    const opacity = emit ? Math.min(0.35, Math.abs(this.speed) / this.maxSpeed * 0.4) : 0;
-    this._exhaustParticles.material.opacity = expLerp(
-      this._exhaustParticles.material.opacity, opacity, 0.15, dt
-    );
-
-    // Keep exhaust particles in world space so the smoke trail does not stick to the car body.
-    if (!this._exhaustWorldSpace && this.group.parent) {
-      this.group.parent.attach(this._exhaustParticles);
-      this._exhaustWorldSpace = true;
-    }
-
-    this.group.updateMatrixWorld(true);
-
-    // World-space exhaust origin
-    const worldOrigin = origin.clone().applyMatrix4(this.group.matrixWorld);
-    const backward    = new THREE.Vector3(0, 0, -1).applyQuaternion(this.group.quaternion);
-
-    for (let i = 0; i < N; i++) {
-      life[i] -= dt * 1.8;
-      if (life[i] <= 0) {
-        // Respawn
-        life[i] = 1.0;
-        pos[i * 3]     = worldOrigin.x + (Math.random() - 0.5) * 0.06;
-        pos[i * 3 + 1] = worldOrigin.y;
-        pos[i * 3 + 2] = worldOrigin.z + (Math.random() - 0.5) * 0.06;
-        const spd = 0.6 + Math.random() * 0.4;
-        vel[i * 3]     = backward.x * spd + (Math.random() - 0.5) * 0.2;
-        vel[i * 3 + 1] = 0.15 + Math.random() * 0.15;
-        vel[i * 3 + 2] = backward.z * spd + (Math.random() - 0.5) * 0.2;
-      }
-      pos[i * 3]     += vel[i * 3]     * dt;
-      pos[i * 3 + 1] += vel[i * 3 + 1] * dt;
-      pos[i * 3 + 2] += vel[i * 3 + 2] * dt;
-    }
-    this._exhaustParticles.geometry.attributes.position.needsUpdate = true;
-  }
-
-  // ── Public update (call from render loop) ────────────────────────────────────
+  // ── Public API ──────────────────────────────────────────────────────────────
 
   update(dt, keys) {
-    // Cap dt to avoid physics explosion on tab-switch
-    const safeDt = Math.min(dt, 0.05);
-
+    const safeDt = dt > 0.05 ? 0.05 : dt;
     this._updateSteering(safeDt, keys);
     this._updateSpeed(safeDt, keys);
     this._updatePose(safeDt);
     this._updateSuspension(safeDt);
     this._updateWheels(safeDt);
-    this._updateExhaust(safeDt);
   }
 
-  // ── Public getters (useful for HUD / camera) ─────────────────────────────────
+  /** Visual-only work: safe to run once per rendered frame instead of per physics step. */
+  updateVisuals(frameDt) {
+    this._updateExhaust(frameDt > 0.1 ? 0.1 : frameDt);
+  }
 
-  get isSkidding()       { return this._skidding; }
-  get lateralG()         { return this._latAcc / 9.81; }
-  get longitudinalG()    { return this._longAcc / 9.81; }
-  get speedKmh()         { return this.speed * 3.6; }
-  get position()         { return this.group.position; }
-  get lightsEnabled()    { return this._lightSystemEnabled; }
+  /** Teleports the car to a pose and clears all accumulated state. */
+  resetTo(x, z, heading) {
+    this.group.position.set(x, 0, z);
+    this.heading = heading;
+    this.slipAngle = 0;
+    this.group.rotation.y = heading;
+    this.speed = 0;
+    this.steerInput = 0;
+    this.steerAngle = 0;
+    this.yawRate = 0;
+    this._prevSpeed = 0;
+    this._longAcc = 0;
+    this._latAcc = 0;
+    this._bodyRoll = 0;
+    this._bodyPitch = 0;
+    this.bodyPivot.rotation.set(0, 0, 0);
+    for (const key in this._suspComp) {
+      this._suspComp[key] = 0;
+      this._suspVel[key] = 0;
+    }
+  }
+
+  dispose() {
+    this._exhaustParticles?.geometry.dispose();
+    this._exhaustParticles?.material.dispose();
+    this._exhaustParticles?.removeFromParent();
+    if (this._lampMaterials) for (const mat of Object.values(this._lampMaterials)) mat.dispose();
+    this.group.removeFromParent();
+  }
+
+  get isSkidding() { return this._skidding; }
+  get isBraking() { return this._braking || this._handbraking; }
+  get lateralG() { return this._latAcc / 9.81; }
+  get longitudinalG() { return this._longAcc / 9.81; }
+  get speedKmh() { return this.speed * 3.6; }
+  get position() { return this.group.position; }
+  get lightsEnabled() { return this._lightSystemEnabled; }
 }

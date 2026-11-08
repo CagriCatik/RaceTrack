@@ -1,128 +1,96 @@
-import * as THREE from 'three';
+import { createPathDriver } from './pathDriver.js';
+import { createResult } from './trackPath.js';
 
-function wrapDistance(d, totalLength) {
-  if (totalLength <= 0) return 0;
-  let value = d % totalLength;
-  if (value < 0) value += totalLength;
-  return value;
-}
+/** Distinct lanes so the field does not drive in single file. */
+const LANES = [1.5, -1.5, 0.6, -0.6];
 
-function buildPath(waypoints) {
-  const points = waypoints.map((wp) => new THREE.Vector3(wp.x, 0, wp.z));
-  const cumulative = [0];
-  for (let i = 0; i < points.length; i++) {
-    const next = points[(i + 1) % points.length];
-    cumulative.push(cumulative[cumulative.length - 1] + points[i].distanceTo(next));
-  }
-  return {
-    points,
-    cumulative,
-    totalLength: cumulative[cumulative.length - 1],
-  };
-}
-
-function samplePath(path, distanceAlongPath) {
-  const { points, cumulative, totalLength } = path;
-  const segmentCount = points.length;
-  const s = wrapDistance(distanceAlongPath, totalLength);
-  let i = 0;
-  while (i < segmentCount - 1 && cumulative[i + 1] < s) i += 1;
-  const segStart = cumulative[i];
-  const segEnd = cumulative[i + 1];
-  const segLen = Math.max(segEnd - segStart, 1e-6);
-  const t = THREE.MathUtils.clamp((s - segStart) / segLen, 0, 1);
-  const a = points[i];
-  const b = points[(i + 1) % segmentCount];
-  return {
-    segment: i,
-    point: a.clone().lerp(b, t),
-  };
-}
-
-function nearestPointOnPath(path, pos) {
-  const { points, cumulative } = path;
-  const segmentCount = points.length;
-  let best = { segment: 0, s: 0, distSq: Infinity };
-  for (let i = 0; i < segmentCount; i++) {
-    const a = points[i];
-    const b = points[(i + 1) % segmentCount];
-    const ab = new THREE.Vector3().subVectors(b, a);
-    const ap = new THREE.Vector3().subVectors(pos, a);
-    const t = THREE.MathUtils.clamp(ap.dot(ab) / Math.max(ab.lengthSq(), 1e-6), 0, 1);
-    const closest = a.clone().addScaledVector(ab, t);
-    const dSq = closest.distanceToSquared(pos);
-    if (dSq < best.distSq) {
-      best = {
-        segment: i,
-        s: cumulative[i] + ab.length() * t,
-        distSq: dSq,
-      };
-    }
-  }
-  return best;
-}
-
-function localTarget(vehiclePos, vehicleHeading, worldTarget) {
-  const dx = worldTarget.x - vehiclePos.x;
-  const dz = worldTarget.z - vehiclePos.z;
-  const c = Math.cos(vehicleHeading);
-  const s = Math.sin(vehicleHeading);
-  return {
-    x: dx * c - dz * s,
-    z: dx * s + dz * c,
-  };
-}
-
-export function createAIRivalsController(rivals, waypoints = []) {
-  const path = waypoints.length >= 3 ? buildPath(waypoints) : null;
+/**
+ * Drives every rival with the shared pure-pursuit driver, plus a one-dimensional
+ * "car ahead" check: rivals have no mutual collision, so without it they converge on
+ * the same racing line and stack into one another at the first corner.
+ */
+export function createAIRivalsController(rivals, path, playerCar = null) {
   let enabled = true;
 
-  const rivalStates = rivals.map((rival, i) => ({
+  const states = rivals.map((rival, i) => ({
     rival,
-    pace: THREE.MathUtils.clamp(rival.pace ?? (0.66 + i * 0.07), 0.55, 0.92),
-    keys: new Set(),
-    trackError: 0,
+    lane: rival.laneOffset ?? LANES[i % LANES.length],
+    driver: createPathDriver(rival, path, {
+      pace: rival.pace ?? 0.68 + i * 0.03,
+      laneOffset: rival.laneOffset ?? LANES[i % LANES.length],
+      steerDeadbandDeg: 1.1,
+      lookAheadBase: 3.6,
+      lookAheadPerSpeed: 0.38,
+      lookAheadMax: 10.8,
+    }),
+    s: 0,
   }));
 
+  const playerResult = createResult();
+  let playerHint = -1;
+  const half = path.totalLength * 0.5;
+
+  /** Signed gap from a to b along the lap, in [-half, +half]. */
+  function gapAhead(from, to) {
+    let delta = to - from;
+    if (delta > half) delta -= path.totalLength;
+    if (delta < -half) delta += path.totalLength;
+    return delta;
+  }
+
   function update(dt) {
-    if (!enabled || !path) return;
-    for (const state of rivalStates) {
-      const { rival, keys, pace } = state;
-      const pos = rival.group.position;
-      const nearest = nearestPointOnPath(path, pos);
-      state.trackError = Math.sqrt(nearest.distSq);
+    if (!enabled) return;
 
-      const speed = Math.abs(rival.speed);
-      const lookAheadDist = THREE.MathUtils.clamp(3.6 + speed * 0.38, 3.6, 10.8);
-      const lookAhead = samplePath(path, nearest.s + lookAheadDist).point;
-      const targetLocal = localTarget(pos, rival.heading, lookAhead);
-      const ld2 = Math.max(targetLocal.x * targetLocal.x + targetLocal.z * targetLocal.z, 1e-4);
-      const desiredSteer = Math.atan2(2 * rival.wheelBase * targetLocal.x, ld2);
-      const steerNorm = THREE.MathUtils.clamp(Math.abs(desiredSteer) / Math.max(rival.maxSteer, 1e-4), 0, 1);
-
-      const desiredSpeed = THREE.MathUtils.clamp(
-        rival.maxSpeed * (pace - steerNorm * 0.30 - Math.min(state.trackError * 0.04, 0.2)),
-        2.6,
-        rival.maxSpeed * pace
-      );
-
-      keys.clear();
-      if (desiredSteer > THREE.MathUtils.degToRad(1.1)) keys.add('ArrowLeft');
-      if (desiredSteer < -THREE.MathUtils.degToRad(1.1)) keys.add('ArrowRight');
-      if (rival.speed < desiredSpeed - 0.3) keys.add('ArrowUp');
-      else if (rival.speed > desiredSpeed + 0.8 && rival.speed > 1.0) keys.add('ArrowDown');
-      if (steerNorm > 0.65 && speed > 4.5) keys.add('ArrowDown');
-      if (state.trackError > 2.2 && speed > 3.0) keys.add('ArrowDown');
-      if (speed < 0.8) keys.add('ArrowUp');
-
-      rival.update(dt, keys);
+    let playerS = null;
+    if (playerCar) {
+      const pos = playerCar.group.position;
+      const nearest = path.nearest(pos.x, pos.z, playerHint, playerResult);
+      playerHint = nearest.segment;
+      playerS = nearest.s;
     }
+
+    for (const state of states) {
+      const keys = state.driver.update();
+      state.s = state.driver.arcLength();
+
+      // Lift off / brake when something sits just ahead in the same lane.
+      let blocked = false;
+      for (const other of states) {
+        if (other === state) continue;
+        const gap = gapAhead(state.s, other.s);
+        if (gap > 0 && gap < 5 && Math.abs(other.lane - state.lane) < 1.1) { blocked = true; break; }
+      }
+      if (!blocked && playerS !== null) {
+        const gap = gapAhead(state.s, playerS);
+        if (gap > 0 && gap < 4.5) blocked = true;
+      }
+      if (blocked) {
+        keys.delete('ArrowUp');
+        if (Math.abs(state.rival.speed) > 3) keys.add('ArrowDown');
+      }
+
+      state.rival.update(dt, keys);
+    }
+  }
+
+  function updateVisuals(frameDt) {
+    if (!enabled) return;
+    for (const state of states) state.rival.updateVisuals(frameDt);
   }
 
   return {
     update,
+    updateVisuals,
     isEnabled: () => enabled,
-    setEnabled: (next) => { enabled = !!next; },
-    rivals: rivalStates.map((s) => s.rival),
+    setEnabled(next) {
+      enabled = !!next;
+      for (const state of states) {
+        state.rival.group.visible = enabled;
+        if (enabled) state.driver.resetHint();
+        else state.rival.speed = 0;
+      }
+    },
+    rivals: states.map((s) => s.rival),
+    trackErrors: () => states.map((s) => s.driver.trackError()),
   };
 }

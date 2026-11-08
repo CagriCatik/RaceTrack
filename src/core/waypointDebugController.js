@@ -1,23 +1,15 @@
-export function createWaypointDebugController(objects = [], initialVisible = false) {
+import { wasPressed } from '../input.js';
+
+/** `V` shows the AI racing line (one instanced marker mesh plus a line loop). */
+export function createWaypointDebugController(group, initialVisible = false) {
   let visible = initialVisible;
-  let toggleHeld = false;
+  if (group) group.visible = visible;
 
-  const applyVisibility = () => {
-    for (const obj of objects) obj.visible = visible;
-  };
-  applyVisibility();
-
-  function update(keys) {
-    const togglePressed = keys.has('KeyV');
-    if (togglePressed && !toggleHeld) {
-      visible = !visible;
-      applyVisibility();
-    }
-    toggleHeld = togglePressed;
+  function update() {
+    if (!wasPressed('KeyV')) return;
+    visible = !visible;
+    if (group) group.visible = visible;
   }
 
-  return {
-    update,
-    isVisible: () => visible,
-  };
+  return { update, isVisible: () => visible };
 }

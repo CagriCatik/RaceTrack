@@ -1,0 +1,15 @@
+{
+  "name": "racetrack",
+  "version": "1.0.0",
+  "description": "A no-build Three.js car racing game using the Kenney car kit",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "dev": "python3 -m http.server 8000",
+    "serve:node": "npx --yes serve@latest -l 8000 .",
+    "check": "node scripts/check-assets.mjs"
+  },
+  "keywords": ["threejs", "webgl", "game", "racing"],
+  "license": "MIT"
+}

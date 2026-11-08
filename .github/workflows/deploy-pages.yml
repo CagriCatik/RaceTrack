@@ -1,0 +1,58 @@
+# Publishes the game to GitHub Pages.
+#
+# The repo keeps the full Kenney car kit (FBX + OBJ source formats, ~16 MB) for
+# reference, but the game only ever fetches the GLB models and the preview PNGs.
+# This job stages just the runtime files, so the published site is ~6 MB instead
+# of ~22 MB.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage runtime files
+        run: |
+          mkdir -p _site/assets/kenney_car-kit/Models
+          cp index.html style.css README.md _site/
+          cp .nojekyll _site/
+          cp -r src _site/
+          cp -r "assets/kenney_car-kit/Models/GLB format" "_site/assets/kenney_car-kit/Models/GLB format"
+          cp -r "assets/kenney_car-kit/Previews" "_site/assets/kenney_car-kit/Previews"
+          cp "assets/kenney_car-kit/License.txt" "_site/assets/kenney_car-kit/License.txt"
+          cp -r assets/kenney_city-kit _site/assets/kenney_city-kit
+          cp assets/image.png _site/assets/image.png
+          echo "Published size:"; du -sh _site
+
+      - name: Verify every model the catalog references exists
+        run: node scripts/check-assets.mjs _site
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

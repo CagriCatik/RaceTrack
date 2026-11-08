@@ -1,35 +1,51 @@
 import * as THREE from 'three';
 
-const STORAGE_KEY = 'car-game.ghost.v1';
+const STORAGE_KEY = 'racetrack.ghost.v2';
+const MAX_SAMPLES = 1200;
 
-function createGhostVisualFrom(sourceGroup) {
-  const ghost = sourceGroup.clone(true);
-  ghost.traverse((obj) => {
-    if (obj.isLight || obj.isPoints) {
-      obj.visible = false;
-      return;
-    }
-    if (!obj.isMesh || !obj.material) return;
-    obj.material = obj.material.clone();
-    obj.material.transparent = true;
-    obj.material.opacity = 0.25;
-    obj.material.depthWrite = false;
-    if ('emissive' in obj.material) {
-      obj.material.emissive = new THREE.Color(0x66ccff);
-      obj.material.emissiveIntensity = 0.5;
-    }
-    if ('color' in obj.material) {
-      obj.material.color.offsetHSL(0.05, 0.0, 0.08);
-    }
+/**
+ * Replays the best lap as a translucent car.
+ *
+ * The ghost used to be a deep clone of the whole vehicle — lights, exhaust points,
+ * and (before this refactor) 48 procedural wheel meshes, with a cloned material per
+ * mesh. It now clones only the visible body/wheel meshes and gives them one shared
+ * ghost material, so the ghost costs a handful of draws instead of ~70.
+ */
+function buildGhost(sourceVehicle) {
+  const material = new THREE.MeshBasicMaterial({
+    color: 0x7fd8ff,
+    transparent: true,
+    opacity: 0.3, // see FADE_NEAR/FADE_FAR: scaled down near the camera
+    depthWrite: false,
+    side: THREE.FrontSide,
   });
-  return ghost;
+
+  const ghost = new THREE.Group();
+  ghost.name = 'ghost';
+  ghost.renderOrder = 3;
+
+  const bodyPivot = new THREE.Group();
+  ghost.add(bodyPivot);
+
+  sourceVehicle.group.traverse((node) => {
+    if (!node.isMesh || !node.visible || node.isPoints) return;
+    // Lamp meshes are tiny and emissive; skipping them keeps the ghost readable.
+    if (node.geometry?.type === 'BoxGeometry' && node.geometry.parameters?.width <= 0.65) return;
+    const clone = new THREE.Mesh(node.geometry, material);
+    node.updateWorldMatrix(true, false);
+    clone.matrixAutoUpdate = false;
+    clone.matrix.copy(sourceVehicle.group.matrixWorld).invert().multiply(node.matrixWorld);
+    clone.castShadow = false;
+    clone.receiveShadow = false;
+    bodyPivot.add(clone);
+  });
+
+  return { ghost, material };
 }
 
-function readStoredGhost() {
+function readStored() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
+    const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
     if (!Array.isArray(data?.samples) || !Number.isFinite(data?.lapTime)) return null;
     return data;
   } catch {
@@ -37,43 +53,38 @@ function readStoredGhost() {
   }
 }
 
-function writeStoredGhost(data) {
+function writeStored(data) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch {
-    // Ignore storage errors.
-  }
+  } catch { /* quota */ }
 }
 
-export function createGhostReplayController(scene, sourceVehicle) {
+export function createGhostReplayController(scene, sourceVehicle, camera = null) {
   let visible = true;
-  let enabled = true;
   let playbackTime = 0;
   let lapTime = 0;
   let samples = [];
   let ghostObject = null;
-  let ghostIndex = 0;
+  let ghostMaterial = null;
+  let index = 0;
 
-  const stored = readStoredGhost();
+  const BASE_OPACITY = 0.3;
+  const FADE_NEAR = 2.5;
+  const FADE_FAR = 7;
+
+  const stored = readStored();
   if (stored) {
     lapTime = stored.lapTime;
     samples = stored.samples;
   }
 
-  function ensureGhostObject() {
-    if (ghostObject || !sourceVehicle?.group) return;
-    ghostObject = createGhostVisualFrom(sourceVehicle.group);
+  function ensureGhost() {
+    if (ghostObject) return;
+    const built = buildGhost(sourceVehicle);
+    ghostObject = built.ghost;
+    ghostMaterial = built.material;
     ghostObject.visible = visible;
     scene.add(ghostObject);
-  }
-
-  function setVisible(nextVisible) {
-    visible = !!nextVisible;
-    if (ghostObject) ghostObject.visible = visible;
-  }
-
-  function setEnabled(nextEnabled) {
-    enabled = !!nextEnabled;
   }
 
   function registerLapEvent(event) {
@@ -82,54 +93,77 @@ export function createGhostReplayController(scene, sourceVehicle) {
     if (lapTime > 0 && event.time >= lapTime) return;
 
     lapTime = event.time;
-    samples = event.samples.map((s) => ({
-      t: s.t,
-      x: s.x,
-      y: s.y,
-      z: s.z,
-      heading: s.heading,
+    samples = event.samples.slice(-MAX_SAMPLES).map((s) => ({
+      t: +s.t.toFixed(3),
+      x: +s.x.toFixed(2),
+      y: +s.y.toFixed(2),
+      z: +s.z.toFixed(2),
+      heading: +s.heading.toFixed(3),
     }));
-    ghostIndex = 0;
+    index = 0;
     playbackTime = 0;
-    writeStoredGhost({ lapTime, samples });
+    writeStored({ lapTime, samples });
   }
 
-  function update(dt) {
-    if (!enabled || !visible || !samples.length || !Number.isFinite(lapTime) || lapTime <= 0) return;
-    ensureGhostObject();
+  function update(frameDt) {
+    if (!visible || samples.length < 2 || lapTime <= 0) return;
+    ensureGhost();
     if (!ghostObject) return;
 
-    playbackTime += dt;
+    playbackTime += frameDt;
     if (playbackTime >= lapTime) {
       playbackTime %= lapTime;
-      ghostIndex = 0;
+      index = 0;
     }
+    while (index < samples.length - 2 && samples[index + 1].t < playbackTime) index += 1;
 
-    while (ghostIndex < samples.length - 2 && samples[ghostIndex + 1].t < playbackTime) {
-      ghostIndex += 1;
-    }
-
-    const a = samples[ghostIndex];
-    const b = samples[Math.min(samples.length - 1, ghostIndex + 1)];
+    const a = samples[index];
+    const b = samples[Math.min(samples.length - 1, index + 1)];
     const span = Math.max(1e-6, b.t - a.t);
-    const alpha = THREE.MathUtils.clamp((playbackTime - a.t) / span, 0, 1);
+    const alpha = Math.min(1, Math.max(0, (playbackTime - a.t) / span));
 
     ghostObject.position.set(
-      THREE.MathUtils.lerp(a.x, b.x, alpha),
-      THREE.MathUtils.lerp(a.y, b.y, alpha),
-      THREE.MathUtils.lerp(a.z, b.z, alpha)
+      a.x + (b.x - a.x) * alpha,
+      a.y + (b.y - a.y) * alpha,
+      a.z + (b.z - a.z) * alpha
     );
-    ghostObject.rotation.y = THREE.MathUtils.lerp(a.heading, b.heading, alpha);
+    // Shortest-arc interpolation, otherwise the ghost spins at the ±π seam.
+    let delta = (b.heading - a.heading) % (Math.PI * 2);
+    if (delta > Math.PI) delta -= Math.PI * 2;
+    if (delta < -Math.PI) delta += Math.PI * 2;
+    ghostObject.rotation.y = a.heading + delta * alpha;
+
+    // Fade out when the chase camera drives through the ghost, otherwise it fills
+    // the screen with a translucent wall at exactly the moment you need to see.
+    if (camera && ghostMaterial) {
+      const dx = ghostObject.position.x - camera.position.x;
+      const dy = ghostObject.position.y - camera.position.y;
+      const dz = ghostObject.position.z - camera.position.z;
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const t = Math.min(1, Math.max(0, (dist - FADE_NEAR) / (FADE_FAR - FADE_NEAR)));
+      ghostMaterial.opacity = BASE_OPACITY * t;
+      ghostObject.visible = t > 0.02;
+    }
   }
 
   return {
     update,
     registerLapEvent,
-    setVisible,
+    setVisible(next) {
+      visible = !!next;
+      if (ghostObject) ghostObject.visible = visible;
+    },
+    toggle() {
+      visible = !visible;
+      if (ghostObject) ghostObject.visible = visible;
+      return visible;
+    },
     isVisible: () => visible,
-    setEnabled,
-    isEnabled: () => enabled,
     hasGhost: () => samples.length > 1 && lapTime > 0,
     bestGhostTime: () => lapTime,
+    dispose() {
+      ghostMaterial?.dispose();
+      ghostObject?.removeFromParent();
+    },
   };
 }

@@ -1,0 +1,10 @@
+City models — Kenney "Starter Kit: City Builder"
+Source:  https://github.com/KenneyNL/Starter-Kit-City-Builder
+Author:  Kenney (https://kenney.nl)
+
+Repository code: MIT License, Copyright (c) 2026 Kenney
+3D models and textures: Creative Commons Zero (CC0 1.0 Universal)
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Only the files under models/ (15 GLB) and models/Textures/colormap.png were
+taken; the Godot project files are not part of this repository.
