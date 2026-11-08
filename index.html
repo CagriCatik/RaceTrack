@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1.0" />
@@ -29,9 +29,9 @@
       </div>
       <div class="hud__gauge"><div id="hud-gauge-fill" class="hud__gauge-fill"></div></div>
       <dl class="hud__stats">
-        <div><dt id="hud-lap-label">Runde</dt><dd id="hud-lap">0</dd></div>
-        <div><dt id="hud-time-label">Zeit</dt><dd id="hud-time">--:--.--</dd></div>
-        <div><dt id="hud-best-label">Beste</dt><dd id="hud-best">--:--.--</dd></div>
+        <div><dt id="hud-lap-label">Lap</dt><dd id="hud-lap">0</dd></div>
+        <div><dt id="hud-time-label">Time</dt><dd id="hud-time">--:--.--</dd></div>
+        <div><dt id="hud-best-label">Best</dt><dd id="hud-best">--:--.--</dd></div>
         <div><dt id="hud-valid-label">Status</dt><dd id="hud-valid">OK</dd></div>
       </dl>
       <div id="hud-chips" class="chips"></div>
@@ -39,19 +39,19 @@
 
     <!-- Controls legend -->
     <section id="help" class="panel help" hidden>
-      <h2>Steuerung</h2>
+      <h2>Controls</h2>
       <ul>
-        <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd><span>Fahren</span></li>
-        <li><kbd>Leertaste</kbd><span>Handbremse</span></li>
-        <li><kbd>C</kbd><span>Kamera: Verfolgung / Haube / Orbit</span></li>
+        <li><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> / <kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd><span>Drive</span></li>
+        <li><kbd>Space</kbd><span>Handbrake</span></li>
+        <li><kbd>C</kbd><span>Camera: chase / hood / orbit</span></li>
         <li><kbd>P</kbd><span>Autopilot</span></li>
-        <li><kbd>O</kbd><span>KI-Gegner</span></li>
-        <li><kbd>G</kbd><span>Ghost der besten Runde</span></li>
-        <li><kbd>M</kbd> <kbd>R</kbd><span>Minimap / Ideallinie</span></li>
-        <li><kbd>L</kbd> <kbd>N</kbd><span>Licht / Tag-Nacht</span></li>
-        <li><kbd>T</kbd> <kbd>V</kbd><span>Tuning / Waypoint-Debug</span></li>
-        <li><kbd>F</kbd> <kbd>H</kbd><span>Performance-Anzeige / diese Hilfe</span></li>
-        <li><kbd>Backspace</kbd><span>Zurück auf Strecke / Straße</span></li>
+        <li><kbd>O</kbd><span>AI opponents</span></li>
+        <li><kbd>G</kbd><span>Best-lap ghost</span></li>
+        <li><kbd>M</kbd> <kbd>R</kbd><span>Minimap / racing line</span></li>
+        <li><kbd>L</kbd> <kbd>N</kbd><span>Headlights / day–night</span></li>
+        <li><kbd>T</kbd> <kbd>V</kbd><span>Tuning / waypoint debug</span></li>
+        <li><kbd>F</kbd> <kbd>H</kbd><span>Performance stats / this help</span></li>
+        <li><kbd>Backspace</kbd><span>Put the car back on the road</span></li>
       </ul>
     </section>
 
@@ -63,28 +63,78 @@
 
     <!-- Start screen / car select -->
     <section id="start" class="start">
-      <div class="start__inner">
+      <div class="start__panel">
+
         <header class="start__head">
-          <h1>Race<span>Track</span></h1>
-          <p>Wähle dein Fahrzeug — Modelle &amp; Vorschaubilder aus dem Kenney Car Kit.</p>
+          <div class="start__brand">
+            <h1>Race<span>Track</span></h1>
+            <p>A low-poly racing sandbox built with Three.js and the Kenney asset kits.</p>
+          </div>
+          <ul class="start__badges">
+            <li>Three.js r165</li>
+            <li>No build step</li>
+            <li>CC0 assets</li>
+          </ul>
         </header>
-        <div class="scenario" role="radiogroup" aria-label="Streckenwahl">
-          <button type="button" class="scenario__option" role="radio" data-scenario="city" aria-checked="true">
-            <strong>Stadtkurs</strong><span>Straßenkurs durch die Innenstadt</span>
-          </button>
-          <button type="button" class="scenario__option" role="radio" data-scenario="country" aria-checked="false">
-            <strong>Landstrecke</strong><span>Offene Piste mit Wald und Hügeln</span>
-          </button>
-          <button type="button" class="scenario__option" role="radio" data-scenario="freeroam" aria-checked="false">
-            <strong>Freie Fahrt</strong><span>Stadt ohne Strecke — fahr, wohin du willst</span>
-          </button>
+
+        <div class="start__body">
+
+          <!-- Selected car showcase -->
+          <aside class="showcase">
+            <div class="showcase__stage">
+              <img id="showcase-image" class="showcase__image" alt="" width="256" height="256" />
+            </div>
+            <h2 id="showcase-name" class="showcase__name">Sedan</h2>
+            <p id="showcase-class" class="showcase__class">Street</p>
+            <dl id="showcase-stats" class="stats"></dl>
+          </aside>
+
+          <!-- Choices -->
+          <div class="choices">
+            <section class="choices__section">
+              <h3 class="choices__title">Game mode</h3>
+              <div class="modes" role="radiogroup" aria-label="Game mode">
+                <button type="button" class="mode" role="radio" data-scenario="city" aria-checked="true">
+                  <svg class="mode__icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="3" y="9" width="5" height="12" rx="1" />
+                    <rect x="9.5" y="4" width="5" height="17" rx="1" />
+                    <rect x="16" y="11" width="5" height="10" rx="1" />
+                  </svg>
+                  <strong>City Circuit</strong>
+                  <span>Street race through a generated downtown</span>
+                </button>
+                <button type="button" class="mode" role="radio" data-scenario="country" aria-checked="false">
+                  <svg class="mode__icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 20c4-1 5-9 9-9s5 8 9 9z" />
+                    <circle cx="18" cy="6" r="2.5" />
+                  </svg>
+                  <strong>Country Track</strong>
+                  <span>Open circuit with woods and rolling hills</span>
+                </button>
+                <button type="button" class="mode" role="radio" data-scenario="freeroam" aria-checked="false">
+                  <svg class="mode__icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 4h16v16H4z" opacity=".35" />
+                    <path d="M4 10h16M4 15h16M10 4v16M15 4v16" />
+                  </svg>
+                  <strong>Free Roam</strong>
+                  <span>No track, no timer — just drive the city</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="choices__section choices__section--grow">
+              <h3 class="choices__title">Vehicle <span id="car-count" class="choices__count"></span></h3>
+              <div id="car-grid" class="car-grid" role="radiogroup" aria-label="Vehicle"></div>
+            </section>
+          </div>
         </div>
-        <div id="car-grid" class="car-grid" role="radiogroup" aria-label="Fahrzeugauswahl"></div>
+
         <footer class="start__foot">
-          <div id="car-specs" class="car-specs"></div>
-          <button id="start-button" type="button" class="btn btn--primary">Rennen starten</button>
+          <p id="start-status" class="start__status">Press Enter or hit Start to load the track.</p>
+          <button id="start-button" type="button" class="btn btn--primary">
+            Start <span aria-hidden="true">→</span>
+          </button>
         </footer>
-        <p id="start-status" class="start__status"></p>
       </div>
     </section>
   </div>

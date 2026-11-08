@@ -16,7 +16,7 @@ export const PLAYABLE_CARS = [
   {
     id: 'sedan',
     name: 'Sedan',
-    klass: 'Straße',
+    klass: 'Street',
     bodyLength: 4.0,
     dynamics: { maxSpeed: 18, accelRate: 11, gripLimit: 12, maxSteerDeg: 32 },
   },
@@ -37,7 +37,7 @@ export const PLAYABLE_CARS = [
   {
     id: 'race',
     name: 'GT Racer',
-    klass: 'Rennen',
+    klass: 'Racing',
     bodyLength: 4.3,
     dynamics: { maxSpeed: 26, accelRate: 16, gripLimit: 16, maxSteerDeg: 30, slipFactor: 0.22 },
     suspension: { spring: 36, travel: 0.05 },
@@ -45,7 +45,7 @@ export const PLAYABLE_CARS = [
   {
     id: 'race-future',
     name: 'Concept X',
-    klass: 'Rennen',
+    klass: 'Racing',
     bodyLength: 4.4,
     dynamics: { maxSpeed: 28, accelRate: 17.5, gripLimit: 17, maxSteerDeg: 28, slipFactor: 0.14 },
     suspension: { spring: 40, travel: 0.04 },
@@ -61,21 +61,21 @@ export const PLAYABLE_CARS = [
   {
     id: 'police',
     name: 'Police',
-    klass: 'Einsatz',
+    klass: 'Emergency',
     bodyLength: 4.2,
     dynamics: { maxSpeed: 20, accelRate: 12, gripLimit: 12.5, maxSteerDeg: 31 },
   },
   {
     id: 'taxi',
     name: 'Taxi',
-    klass: 'Straße',
+    klass: 'Street',
     bodyLength: 4.1,
     dynamics: { maxSpeed: 17, accelRate: 10, gripLimit: 11.5, maxSteerDeg: 32 },
   },
   {
     id: 'suv',
     name: 'SUV',
-    klass: 'Offroad',
+    klass: 'Off-road',
     bodyLength: 4.4,
     dynamics: { maxSpeed: 17, accelRate: 10, gripLimit: 10, maxSteerDeg: 33 },
     suspension: { spring: 22, travel: 0.12 },
@@ -83,7 +83,7 @@ export const PLAYABLE_CARS = [
   {
     id: 'suv-luxury',
     name: 'SUV Luxury',
-    klass: 'Offroad',
+    klass: 'Off-road',
     bodyLength: 4.6,
     dynamics: { maxSpeed: 18.5, accelRate: 11, gripLimit: 10.5, maxSteerDeg: 32 },
     suspension: { spring: 24, travel: 0.11 },
@@ -91,7 +91,7 @@ export const PLAYABLE_CARS = [
   {
     id: 'van',
     name: 'Van',
-    klass: 'Nutzfahrzeug',
+    klass: 'Utility',
     bodyLength: 4.5,
     dynamics: { maxSpeed: 15.5, accelRate: 8.5, gripLimit: 9, maxSteerDeg: 30 },
     suspension: { spring: 20, travel: 0.13 },
@@ -99,7 +99,7 @@ export const PLAYABLE_CARS = [
   {
     id: 'truck',
     name: 'Truck',
-    klass: 'Nutzfahrzeug',
+    klass: 'Utility',
     bodyLength: 5.2,
     dynamics: { maxSpeed: 14, accelRate: 7.5, gripLimit: 8.5, maxSteerDeg: 28 },
     suspension: { spring: 18, travel: 0.14 },
@@ -107,7 +107,7 @@ export const PLAYABLE_CARS = [
   {
     id: 'firetruck',
     name: 'Firetruck',
-    klass: 'Einsatz',
+    klass: 'Emergency',
     bodyLength: 5.6,
     dynamics: { maxSpeed: 13.5, accelRate: 7, gripLimit: 8, maxSteerDeg: 27 },
     suspension: { spring: 18, travel: 0.14 },
@@ -115,7 +115,7 @@ export const PLAYABLE_CARS = [
   {
     id: 'tractor',
     name: 'Tractor',
-    klass: 'Spaß',
+    klass: 'Novelty',
     bodyLength: 3.6,
     dynamics: { maxSpeed: 9, accelRate: 6, gripLimit: 8, maxSteerDeg: 38 },
     suspension: { spring: 16, travel: 0.16 },

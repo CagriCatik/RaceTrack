@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { wasPressed } from '../input.js';
 
 const MODES = ['chase', 'hood', 'orbit'];
-const MODE_LABEL = { chase: 'CHASE', hood: 'HAUBE', orbit: 'ORBIT' };
+const MODE_LABEL = { chase: 'CHASE', hood: 'HOOD', orbit: 'ORBIT' };
 
 /**
  * Three camera modes on `C`. Orbit keeps the old free-look behaviour; chase and hood

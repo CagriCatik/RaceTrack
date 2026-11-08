@@ -2,10 +2,10 @@
 
 # 🏁 RaceTrack
 
-**Ein Three.js-Rennspiel ohne Build-Schritt — HTML öffnen, fahren.**
+**A Three.js racing sandbox with no build step — open the HTML, start driving.**
 
 [![Three.js](https://img.shields.io/badge/Three.js-r165-000000?style=flat&logo=three.js&logoColor=white)](https://threejs.org/)
-[![No build](https://img.shields.io/badge/build-none-brightgreen?style=flat)](#schnellstart)
+[![No build](https://img.shields.io/badge/build-none-brightgreen?style=flat)](#quick-start)
 [![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat)](LICENSE)
 
 <img src="assets/image.png" alt="RaceTrack" width="760" />
@@ -14,191 +14,190 @@
 
 ## Features
 
-- **Drei Szenarien:** *Stadtkurs* (Straßenkurs durch eine prozedural aufgebaute Kleinstadt), *Landstrecke* (offene Piste mit Wald und Hügeln) und ***Freie Fahrt*** — die ganze Stadt ohne Strecke, mit Gebäudekollision und Kilometerzähler
-- **14 fahrbare Autos** aus dem Kenney Car Kit, auswählbar über einen Startbildschirm mit den Original-Vorschaubildern
-- **Fahrphysik** mit Ackermann-Lenkung, Schräglauf/Drift, Gripgrenze, Radlastverlagerung und Federung
-- **3 KI-Gegner** mit eigenen Modellen, Fahrspuren und Auffahr-Erkennung
-- **Rundenzeiten** inkl. Sektoren-Checkpoints, Abkürzungs-Erkennung, Bestzeiten-Speicher und **Ghost** der schnellsten Runde
-- **Hindernisse** (Pylonen, Kisten, Debris) die beim Treffer wegfliegen und Tempo kosten
-- **Leitplanken-Kollision**, Tag-/Nacht-Umschaltung, Minimap, Live-Tuning-Panel, prozeduraler Motorsound
-- **Keine Abhängigkeiten, kein Bundler** — three.js kommt über eine Import-Map vom CDN
+- **Three game modes:** *City Circuit* (a street race through a procedurally built town), *Country Track* (open circuit with woods and rolling hills) and ***Free Roam*** — the whole city with no track at all, building collision and a trip computer
+- **14 playable cars** from the Kenney Car Kit, picked on a start screen built from the kit's own preview renders
+- **Vehicle physics** with Ackermann steering, slip-angle drift, a grip limit, load transfer and suspension
+- **3 AI opponents** with their own models, lanes and rear-end detection
+- **Lap timing** including sector checkpoints, track-limit detection, a stored best-time table and a **ghost** of your fastest lap
+- **Obstacles** (cones, crates, debris) that fly off and cost you momentum when you clip them
+- **Guardrail collision**, day/night toggle, minimap, live tuning panel, procedural engine audio
+- **No dependencies, no bundler** — Three.js comes from a CDN via an import map
 
-## Schnellstart
+## Quick start
 
 ```shell
-# Beliebiger statischer Server, z. B.
+# Any static file server, for example
 python3 -m http.server 8000
-# oder
+# or
 npx serve -l 8000
 ```
 
-Dann **http://localhost:8000** öffnen. `file://` funktioniert nicht — ES-Module und
-`fetch()` auf die GLB-Dateien brauchen HTTP.
+Then open **http://localhost:8000**. Opening the file directly with `file://` will not
+work — ES modules and `fetch()` on the GLB files both need HTTP.
 
-## Freie Fahrt
+## Controls
 
-Kein Rundkurs, keine Zeitnahme: die Stadt füllt ein Raster von 224 × 224 Metern, du
-startest an einer Kreuzung und fährst, wohin du willst. Das HUD wird dabei zum
-Bordcomputer — gefahrene Strecke, Fahrzeit, Höchstgeschwindigkeit statt Runden.
-
-Drei Dinge unterscheiden den Modus technisch vom Rundkurs:
-
-- **Die Häuser halten dich auf.** Ohne Strecke gibt es keinen Leitplanken-Korridor, der
-  das Auto führt. `createCityCollider` in [`src/scene/city.js`](src/scene/city.js) legt
-  die Gebäudegrundrisse in Buckets auf dasselbe Raster, prüft nur die neun Zellen um
-  das Auto und schiebt es über die flachere der beiden Überlappungsachsen heraus —
-  also über die Wand, die man tatsächlich getroffen hat.
-- **Der Schattenwurf wandert mit.** Die Shadow-Map deckt rund 90 m ab, die Stadt 224 m.
-  Statt die Map aufzublähen (und ihre Auflösung zu verlieren), folgt die Sonne samt
-  Schattenbox dem Auto.
-- **Die Gegner werden zu Stadtverkehr.** Sie fahren einen geschlossenen Ring durch das
-  Straßenraster, der als ganz normaler `trackPath` erzeugt wird — damit funktionieren
-  Pure-Pursuit-Fahrer, Minimap und Auffahr-Erkennung unverändert weiter.
-
-Die Minimap zeigt hier das Straßennetz statt einer Ideallinie. `Backspace` setzt dich
-auf die nächstgelegene Straße zurück, falls du dich festfährst.
-
-## Der Stadtkurs
-
-Die Stadt wird beim Start aus 1×1-Kacheln des Kenney City-Builder-Kits generiert, nicht
-von Hand platziert. Für jede Zelle des 8-Meter-Rasters fragt
-[`src/scene/city.js`](src/scene/city.js) die Mittellinie der Strecke nach dem Abstand und
-entscheidet daraus:
-
-| Abstand zur Mittellinie | Ergebnis |
+| Key | Action |
 | --- | --- |
-| < 10,5 m | frei (Fahrbahn + Leitplanke) |
-| < 15 m | Gehweg |
-| innerhalb des Ovals | Park, mit Brunnen in der Mitte |
-| sonst | Stadtblock: Straße, Gebäude oder Grünfläche |
-
-Das Straßennetz kachelt sich selbst: jede Straßenzelle prüft ihre vier Nachbarn und wählt
-Gerade, Kurve, T-Stück oder Kreuzung mit der passenden Drehung — so schließt das Raster
-sauber ab, wo es auf den Kurs trifft. Die Platzierung ist über einen Hash deterministisch,
-die Stadt sieht also bei jedem Laden gleich aus.
-
-Derselbe Generator baut auch die Freie Fahrt; dort entfällt nur die Streckenabfrage.
-
-Zwei Zahlen, die nicht offensichtlich sind: die Abstände rechnen mit der **halben Diagonale**
-der Kachel (5,66 m bei 8 m Kantenlänge), nicht mit der halben Kantenlänge — sonst ragen
-Ecken auf die Fahrbahn. Und die Kacheln des Kits sind Sockelplatten: eine Straße liegt
-0,05 Einheiten hoch, ein Gehweg 0,06 — bei 8 m Kantenlänge also 40 bzw. 48 cm. Die ganze
-Stadt wird deshalb um die Straßenhöhe abgesenkt (`CITY_Y`), damit Fahrbahnen auf `y = 0`
-liegen und befahrbar sind; die Gehwege stehen dann 8 cm vor und lesen sich als Bordstein.
-
-Die ganze Stadt kostet **14 zusätzliche Draw Calls** (eine InstancedMesh pro Modelltyp).
-
-## Steuerung
-
-| Taste | Funktion |
-| --- | --- |
-| `W` `A` `S` `D` / Pfeiltasten | Gas, Lenken, Bremsen / Rückwärts |
-| `Leertaste` | Handbremse (löst das Heck aus) |
-| `C` | Kamera: Verfolgung → Haube → Orbit |
+| `W` `A` `S` `D` / arrow keys | Throttle, steer, brake / reverse |
+| `Space` | Handbrake (kicks the rear out) |
+| `C` | Camera: chase → hood → orbit |
 | `P` | Autopilot |
-| `O` | KI-Gegner ein/aus |
-| `G` | Ghost der besten Runde |
-| `M` / `R` | Minimap / Ideallinie |
-| `L` / `N` | Fahrzeuglicht / Tag–Nacht |
-| `T` / `V` | Tuning-Panel / Waypoint-Debug |
-| `F` / `H` | Performance-Anzeige / Hilfe |
-| `Backspace` | Auto zurück auf Strecke / Straße setzen |
+| `O` | AI opponents on/off |
+| `G` | Best-lap ghost |
+| `M` / `R` | Minimap / racing line |
+| `L` / `N` | Headlights / day–night |
+| `T` / `V` | Tuning panel / waypoint debug |
+| `F` / `H` | Performance stats / help |
+| `Backspace` | Put the car back on the road |
 
-## Auf GitHub Pages veröffentlichen
+## Free Roam
 
-Das Spiel ist rein statisch und läuft unverändert auf Pages.
+No circuit, no timing: the city fills a 224 × 224 metre grid, you start at an
+intersection and drive wherever you like. The HUD turns into a trip computer —
+distance, elapsed time and top speed instead of laps.
+
+Three things make this mode different from the circuits:
+
+- **Buildings stop you.** Without a track there is no guardrail corridor keeping the
+  car honest. `createCityCollider` in [`src/scene/city.js`](src/scene/city.js) buckets
+  the building footprints onto the same grid the city is built from, only ever tests
+  the nine cells around the car, and pushes it out along the *shallower* of the two
+  overlap axes — that is, through the wall you actually hit.
+- **The shadow box travels.** The shadow map covers about 90 m; the city is 224 m
+  across. Rather than inflate the map (and throw away its resolution), the sun and its
+  shadow frustum follow the car.
+- **The opponents become traffic.** They drive a closed loop through the street grid
+  that is generated as an ordinary `trackPath`, so the pure-pursuit driver, the minimap
+  and the rear-end detection all keep working unchanged.
+
+The minimap shows the street layout instead of a racing line, and `Backspace` drops you
+back onto the nearest street if you wedge yourself somewhere.
+
+## The city
+
+The city is generated at startup from 1×1 tiles of the Kenney city-builder kit, not
+placed by hand. For every cell of the 8-metre grid,
+[`src/scene/city.js`](src/scene/city.js) asks the track centre line how far away it is
+and decides from that:
+
+| Distance from the centre line | Result |
+| --- | --- |
+| < 10.5 m | empty (racing surface + guardrail) |
+| < 15 m | pavement |
+| inside the oval | park, with a fountain at its centre |
+| otherwise | city block: street, building or green space |
+
+The street network auto-tiles: every street cell reads its four neighbours as a bitmask
+and picks straight, corner, T-junction or crossroads with the matching rotation, so the
+grid closes off cleanly where it meets the circuit. Placement is driven by a hash, so
+the city looks identical on every reload.
+
+The same generator builds Free Roam; it just skips the track query.
+
+Two numbers that are not obvious: the clearances use the tile's **half-diagonal**
+(5.66 m for an 8 m tile), not its half-width, or building corners poke onto the racing
+line. And the kit's tiles are base plates — a road sits 0.05 units high and a pavement
+0.06, which is 40 and 48 cm at an 8 m tile. The whole city is therefore lowered by the
+road height (`CITY_Y`) so road surfaces land at `y = 0` and are drivable; the pavements
+then stand 8 cm proud, which reads as a kerb.
+
+The entire city costs **14 extra draw calls** — one InstancedMesh per model type.
+
+## Deploying to GitHub Pages
+
+The game is fully static and runs on Pages unchanged.
 
 1. Repository → **Settings → Pages → Source: GitHub Actions**
-2. Push auf `main` — [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml)
-   erledigt den Rest.
+2. Push to `main` — [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml)
+   does the rest.
 
-Der Workflow kopiert bewusst nur die Laufzeit-Dateien in das Artefakt (GLB-Modelle,
-Previews, `src/`, HTML/CSS). Die FBX- und OBJ-Varianten des Car Kits sowie `assets/car.glb`
-bleiben im Repository, werden aber nicht veröffentlicht: **~7 MB statt ~29 MB**.
+The workflow deliberately stages only the runtime files (GLB models, previews, `src/`,
+HTML/CSS). The Car Kit's FBX and OBJ variants and `assets/car.glb` stay in the
+repository but are not published: **~7 MB instead of ~29 MB**.
 
-Zwei Dinge, die bei Pages sonst stolpern:
+Two things that otherwise trip Pages up:
 
-- `.nojekyll` liegt im Repo-Root, sonst filtert Jekyll Pfade heraus.
-- Der Asset-Pfad enthält ein Leerzeichen (`Models/GLB format/`). Das funktioniert
-  URL-kodiert, ist aber beim Umbauen leicht kaputtzumachen — `npm run check`
-  (bzw. der Workflow-Schritt) prüft, dass jedes im Katalog referenzierte Modell
-  wirklich ausgeliefert wird.
+- `.nojekyll` sits in the repository root, or Jekyll filters paths out.
+- The asset path contains a space (`Models/GLB format/`). That works URL-encoded but is
+  easy to break when restructuring, so `npm run check` (and the workflow step) verifies
+  that every model referenced by the catalogs is actually shipped.
 
-## Projektstruktur
+## Project layout
 
 ```
 src/
-├── main.js                     Bootstrap + Spielschleife
-├── input.js                    Tastatur inkl. Flankenerkennung, Fokus-Reset
-├── Vehicle.js                  Fahrzeug: Physik, Modell-Räder, Lampen, Abgas
+├── main.js                     Bootstrap + game loop
+├── input.js                    Keyboard with edge detection and focus reset
+├── Vehicle.js                  Physics, model wheels, lamps, exhaust
 ├── config/
-│   ├── vehicleConfig.js        Basiswerte + Merge-Logik
-│   ├── carCatalog.js           Fahrzeuge, Gegner und Streckenprops
-│   └── cityCatalog.js          Stadtmodelle und Rasterparameter
+│   ├── vehicleConfig.js        Base values + merge logic
+│   ├── carCatalog.js           Cars, opponents and track props
+│   └── cityCatalog.js          City models and grid parameters
 ├── core/
-│   ├── assetLoader.js          GLB-Cache, geteiltes Material/Textur
-│   ├── instancing.js           InstancedMesh-Helfer
-│   ├── trackPath.js            Allokationsfreie Streckengeometrie-Abfragen
-│   ├── pathDriver.js           Pure-Pursuit-Fahrer (Autopilot + KI)
-│   ├── collisionSystem.js      Props + Leitplanken-Korridor
-│   ├── lapController.js        Rundenzeiten, Checkpoints, Ghost-Sampling
-│   └── …                       Kamera, Loop, Renderer, Sound, Tuning, Minimap
+│   ├── assetLoader.js          GLB cache, shared material/texture per kit
+│   ├── instancing.js           InstancedMesh helpers
+│   ├── trackPath.js            Allocation-free track geometry queries
+│   ├── pathDriver.js           Pure-pursuit driver (autopilot + AI)
+│   ├── collisionSystem.js      Props, guardrail corridor, buildings
+│   ├── lapController.js        Lap times, checkpoints, ghost sampling
+│   └── …                       Camera, loop, renderer, audio, tuning, minimap
 ├── scene/
-│   ├── createScene.js          Baut die Welt zusammen, je Szenario
-│   ├── city.js                 Stadtraster, Straßen-Autotiling, Gebäudekollision
-│   ├── track.js                Fahrbahn, Curbs, Leitplanken (instanziert)
-│   ├── materials.js            Geteilte Materialien
-│   └── …                       Terrain, Licht, Props, Wetter
+│   ├── createScene.js          Assembles the world per game mode
+│   ├── city.js                 City grid, street auto-tiling, building collision
+│   ├── track.js                Road surface, kerbs, guardrails (all instanced)
+│   ├── materials.js            Shared materials
+│   └── …                       Terrain, lighting, props, weather
 └── ui/
-    ├── hud.js                  HUD, Toasts, Performance-Overlay
-    └── startOverlay.js         Fahrzeugauswahl + Ladebildschirm
+    ├── hud.js                  HUD, toasts, performance overlay
+    └── startOverlay.js         Vehicle picker + loading screen
 ```
 
-## Anpassen
+## Customising
 
-**Auto hinzufügen** — in [`src/config/carCatalog.js`](src/config/carCatalog.js) einen
-Eintrag ergänzen; die `id` ist der Dateiname im Kit (ohne `.glb`), das Vorschaubild
-wird automatisch aus `Previews/<id>.png` geladen:
+**Add a car** — add an entry to [`src/config/carCatalog.js`](src/config/carCatalog.js).
+The `id` is the file name in the kit (without `.glb`); the preview image is picked up
+from `Previews/<id>.png` automatically:
 
 ```js
-{ id: 'garbage-truck', name: 'Müllwagen', klass: 'Nutzfahrzeug', bodyLength: 5.4,
+{ id: 'garbage-truck', name: 'Garbage Truck', klass: 'Utility', bodyLength: 5.4,
   dynamics: { maxSpeed: 12, accelRate: 6.5, gripLimit: 8 } }
 ```
 
-**Fahrverhalten** — zur Laufzeit mit `T` justieren und als Preset speichern, oder die
-Startwerte in [`src/config/vehicleConfig.js`](src/config/vehicleConfig.js) ändern.
+**Handling** — tweak it live with `T` and save a preset, or change the starting values
+in [`src/config/vehicleConfig.js`](src/config/vehicleConfig.js).
 
-**Strecke** — die Maße stehen in `TRACK` in [`src/scene/track.js`](src/scene/track.js).
+**Track** — the dimensions live in `TRACK` in [`src/scene/track.js`](src/scene/track.js).
 
-**Stadt** — Blockgröße, Straßenabstand, Grünanteil und Ausdehnung stehen in `CITY_LAYOUT`
-(Stadtkurs) bzw. `FREEROAM_LAYOUT` (Freie Fahrt) in
+**City** — block size, street spacing, green ratio and extent live in `CITY_LAYOUT`
+(City Circuit) and `FREEROAM_LAYOUT` (Free Roam) in
 [`src/config/cityCatalog.js`](src/config/cityCatalog.js).
 
-## Koordinatensystem
+## Coordinate system
 
-Vorwärts ist `+Z`, oben `+Y`, und damit liegt die **linke** Fahrzeugseite auf `+X`
-(`rechts = vorwärts × oben`). Ein positiver Lenkwinkel bedeutet Linkskurve, positives
-`heading` dreht nach links. Die Kenney-Modelle folgen derselben Konvention
-(`wheel-front-left` liegt bei `+X`), weshalb ihre Räder direkt übernommen werden können.
+Forward is `+Z`, up is `+Y`, which puts the car's **left** side on `+X`
+(`right = forward × up`). A positive steering angle means a left turn, and increasing
+`heading` rotates to the left. The Kenney models follow the same convention
+(`wheel-front-left` sits at `+X`), which is why their wheels can be adopted directly.
 
-## Technik
+## Built with
 
-- [Three.js r165](https://threejs.org/) über CDN-Import-Map (`three`, `three/addons/`)
-- Vanilla ES-Module, kein Bundler, keine `node_modules`
+- [Three.js r165](https://threejs.org/) via a CDN import map (`three`, `three/addons/`)
+- Vanilla ES modules, no bundler, no `node_modules`
 
 ### Assets
 
-| Paket | Verwendung | Quelle | Lizenz |
+| Pack | Used for | Source | Licence |
 | --- | --- | --- | --- |
-| Kenney **Car Kit** | Fahrzeuge, Pylonen, Debris | [kenney.nl](https://kenney.nl/assets/car-kit) | CC0 |
-| Kenney **Starter Kit: City Builder** | Gebäude, Straßen, Gehwege, Parks | [github.com/KenneyNL](https://github.com/KenneyNL/Starter-Kit-City-Builder) | CC0 (Repo-Code MIT) |
+| Kenney **Car Kit** | Vehicles, cones, debris | [kenney.nl](https://kenney.nl/assets/car-kit) | CC0 |
+| Kenney **Starter Kit: City Builder** | Buildings, roads, pavements, parks | [github.com/KenneyNL](https://github.com/KenneyNL/Starter-Kit-City-Builder) | CC0 (repo code MIT) |
 
-Details in `assets/kenney_car-kit/License.txt` und `assets/kenney_city-kit/CREDITS.txt`.
+Details in `assets/kenney_car-kit/License.txt` and `assets/kenney_city-kit/CREDITS.txt`.
 
-Beide Kits texturieren ihre Modelle mit einer Datei namens `colormap.png` — es sind aber
-**zwei verschiedene Paletten**. [`src/core/assetLoader.js`](src/core/assetLoader.js) teilt
-Material und Textur deshalb pro Kit (abgeleitet aus dem Verzeichnis), nicht global.
+Both kits texture their models with a file called `colormap.png` — but they are **two
+different palettes**. [`src/core/assetLoader.js`](src/core/assetLoader.js) therefore
+shares material and texture *per kit* (keyed by directory) rather than globally.
 
 ---
 
-<div align="center"><b>Gute Fahrt 🏎️</b></div>
+<div align="center"><b>Have a good run 🏎️</b></div>

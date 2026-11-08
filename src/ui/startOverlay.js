@@ -2,122 +2,153 @@ import { PLAYABLE_CARS, DEFAULT_CAR_ID, modelPath, previewPath } from '../config
 import { CITY_MODEL_IDS, cityModelPath } from '../config/cityCatalog.js';
 import { preloadModels } from '../core/assetLoader.js';
 
-const STORAGE_KEY = 'racetrack.car.v1';
+const CAR_KEY = 'racetrack.car.v1';
 const SCENARIO_KEY = 'racetrack.scenario.v1';
+const SCENARIOS = ['city', 'country', 'freeroam'];
+
+/** Upper bounds used to normalise the stat bars; a little above the fastest car. */
+const STAT_RANGE = {
+  maxSpeed: 30,
+  accelRate: 19,
+  gripLimit: 18,
+};
 
 /**
- * Car picker + loading screen, built from the kit's own `Previews/*.png`.
+ * Start screen: mode picker, vehicle picker and a showcase of the current selection,
+ * built from the kit's own `Previews/*.png`.
  *
- * It also doubles as the audio gesture: browsers refuse to start an AudioContext
- * without a user interaction, so "Rennen starten" is the natural unlock point.
+ * It doubles as the loading screen and as the audio gesture — browsers refuse to start
+ * an AudioContext without a user interaction, so "Start" is the natural unlock point.
  */
 export function createStartOverlay(root) {
   const grid = root.querySelector('#car-grid');
-  const specs = root.querySelector('#car-specs');
   const status = root.querySelector('#start-status');
   const button = root.querySelector('#start-button');
+  const countLabel = root.querySelector('#car-count');
+  const showcase = {
+    image: root.querySelector('#showcase-image'),
+    name: root.querySelector('#showcase-name'),
+    klass: root.querySelector('#showcase-class'),
+    stats: root.querySelector('#showcase-stats'),
+  };
+  const modeButtons = [...root.querySelectorAll('.mode')];
 
-  const scenarioButtons = [...root.querySelectorAll('.scenario__option')];
   const cards = new Map();
-  let selectedId = loadSelection();
-  let scenario = loadScenario();
+  let selectedId = readStored(CAR_KEY, (v) => PLAYABLE_CARS.some((c) => c.id === v), DEFAULT_CAR_ID);
+  let scenario = readStored(SCENARIO_KEY, (v) => SCENARIOS.includes(v), 'city');
 
-  function loadSelection() {
+  function readStored(key, isValid, fallback) {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (stored && PLAYABLE_CARS.some((c) => c.id === stored)) return stored;
+      const value = localStorage.getItem(key);
+      if (value && isValid(value)) return value;
     } catch { /* private mode */ }
-    return DEFAULT_CAR_ID;
+    return fallback;
   }
 
-  function loadScenario() {
-    try {
-      const stored = localStorage.getItem(SCENARIO_KEY);
-      if (stored === 'city' || stored === 'country' || stored === 'freeroam') return stored;
-    } catch { /* private mode */ }
-    return 'city';
+  function store(key, value) {
+    try { localStorage.setItem(key, value); } catch { /* quota */ }
   }
 
-  function selectScenario(next) {
-    scenario = next;
-    for (const button of scenarioButtons) {
-      button.setAttribute('aria-checked', String(button.dataset.scenario === next));
-    }
-    try { localStorage.setItem(SCENARIO_KEY, next); } catch { /* ignore */ }
+  // ── Stat bars, rebuilt once and then only updated
+  const bars = new Map();
+  for (const [key, label] of [['maxSpeed', 'Speed'], ['accelRate', 'Accel'], ['gripLimit', 'Grip']]) {
+    const row = document.createElement('div');
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    const track = document.createElement('div');
+    track.className = 'bar';
+    const fill = document.createElement('i');
+    track.appendChild(fill);
+    const dd = document.createElement('dd');
+    row.append(dt, track, dd);
+    showcase.stats.appendChild(row);
+    bars.set(key, { fill, value: dd });
   }
 
-  for (const button of scenarioButtons) {
-    button.addEventListener('click', () => selectScenario(button.dataset.scenario));
-  }
-
+  // ── Vehicle cards
   for (const entry of PLAYABLE_CARS) {
     const card = document.createElement('button');
     card.type = 'button';
     card.className = 'car-card';
     card.setAttribute('role', 'radio');
     card.setAttribute('aria-checked', String(entry.id === selectedId));
-    card.dataset.carId = entry.id;
+    card.title = `${entry.name} — ${entry.klass}`;
 
     const img = document.createElement('img');
     img.src = previewPath(entry.id);
     img.alt = '';
     img.loading = 'lazy';
     img.decoding = 'async';
-    img.width = 128;
-    img.height = 128;
+    img.width = 96;
+    img.height = 96;
 
     const name = document.createElement('span');
     name.textContent = entry.name;
-    const klass = document.createElement('small');
-    klass.textContent = entry.klass;
 
-    card.append(img, name, klass);
-    card.addEventListener('click', () => select(entry.id));
+    card.append(img, name);
+    card.addEventListener('click', () => selectCar(entry.id));
     grid.appendChild(card);
     cards.set(entry.id, card);
   }
+  if (countLabel) countLabel.textContent = `(${PLAYABLE_CARS.length})`;
 
-  function select(id) {
+  function selectCar(id) {
     selectedId = id;
     for (const [carId, card] of cards) card.setAttribute('aria-checked', String(carId === id));
 
     const entry = PLAYABLE_CARS.find((c) => c.id === id);
-    specs.textContent = '';
-    const stats = [
-      ['Top', `${Math.round((entry.dynamics?.maxSpeed ?? 18) * 3.6)} km/h`],
-      ['Beschl.', `${(entry.dynamics?.accelRate ?? 11).toFixed(1)} m/s²`],
-      ['Grip', `${(entry.dynamics?.gripLimit ?? 12).toFixed(1)}`],
-      ['Klasse', entry.klass],
-    ];
-    for (const [label, value] of stats) {
-      const cell = document.createElement('div');
-      cell.append(document.createTextNode(label));
-      const strong = document.createElement('b');
-      strong.textContent = value;
-      cell.appendChild(strong);
-      specs.appendChild(cell);
+    showcase.image.src = previewPath(id);
+    showcase.image.alt = entry.name;
+    showcase.name.textContent = entry.name;
+    showcase.klass.textContent = entry.klass;
+
+    const dynamics = entry.dynamics ?? {};
+    const shown = {
+      maxSpeed: `${Math.round((dynamics.maxSpeed ?? 18) * 3.6)} km/h`,
+      accelRate: `${(dynamics.accelRate ?? 11).toFixed(1)} m/s²`,
+      gripLimit: (dynamics.gripLimit ?? 12).toFixed(1),
+    };
+    for (const [key, bar] of bars) {
+      const raw = dynamics[key] ?? 0;
+      bar.fill.style.width = `${Math.min(100, (raw / STAT_RANGE[key]) * 100).toFixed(0)}%`;
+      bar.value.textContent = shown[key];
     }
-    try { localStorage.setItem(STORAGE_KEY, id); } catch { /* ignore */ }
+    store(CAR_KEY, id);
   }
 
-  select(selectedId);
+  function selectScenario(next) {
+    scenario = next;
+    for (const mode of modeButtons) {
+      mode.setAttribute('aria-checked', String(mode.dataset.scenario === next));
+    }
+    store(SCENARIO_KEY, next);
+  }
+
+  for (const mode of modeButtons) {
+    mode.addEventListener('click', () => selectScenario(mode.dataset.scenario));
+  }
+
+  selectCar(selectedId);
   selectScenario(scenario);
 
-  /** Resolves with the chosen car + scenario once the player presses start. */
+  /** Resolves with the chosen car + mode once the player presses start. */
   function waitForStart(extraModelIds = []) {
     return new Promise((resolve) => {
       const begin = async () => {
         if (button.disabled) return;
         button.disabled = true;
+
         const paths = [selectedId, ...extraModelIds].map(modelPath);
         if (scenario !== 'country') paths.push(...CITY_MODEL_IDS.map(cityModelPath));
-        status.textContent = 'Modelle laden…';
+
+        status.textContent = 'Loading models…';
         await preloadModels(paths, (progress, done, total) => {
-          status.textContent = `Modelle laden… ${done}/${total}`;
-          button.textContent = `Lade ${Math.round(progress * 100)}%`;
+          status.textContent = `Loading models… ${done}/${total}`;
+          button.textContent = `${Math.round(progress * 100)}%`;
         });
-        status.textContent = scenario === 'country' ? 'Strecke aufbauen…' : 'Stadt aufbauen…';
-        button.textContent = 'Startet…';
+
+        status.textContent = scenario === 'country' ? 'Building the track…' : 'Building the city…';
+        button.textContent = 'Starting…';
         resolve({ carId: selectedId, scenario });
       };
 

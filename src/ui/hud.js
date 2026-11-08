@@ -28,12 +28,12 @@ export function createHud(root) {
   const chipDefs = [
     ['cam', 'CAM'],
     ['auto', 'AUTO P'],
-    ['rivals', 'KI O'],
+    ['rivals', 'AI O'],
     ['ghost', 'GHOST G'],
     ['map', 'MAP M'],
     ['line', 'LINE R'],
-    ['lights', 'LICHT L'],
-    ['weather', 'NACHT N'],
+    ['lights', 'LIGHTS L'],
+    ['weather', 'NIGHT N'],
     ['sound', 'SOUND'],
     ['tune', 'TUNE T'],
   ];

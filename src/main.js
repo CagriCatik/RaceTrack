@@ -84,7 +84,7 @@ async function main() {
   let driveSeconds = 0;
 
   if (freeRoam) {
-    hud.setLabels({ lap: 'Strecke', time: 'Fahrzeit', best: 'Top', valid: 'Modus' });
+    hud.setLabels({ lap: 'Distance', time: 'Elapsed', best: 'Top', valid: 'Mode' });
     hud.hideChips(['ghost']);
   }
 
@@ -142,7 +142,7 @@ async function main() {
         time: lap ? lap.currentTimeText() : formatClock(driveSeconds),
         best: lap ? lap.bestTimeText() : `${Math.round(topSpeedKmh)} km/h`,
         valid: lap ? lap.isCurrentLapValid() : true,
-        validText: lap ? undefined : 'FREI',
+        validText: lap ? undefined : 'FREE',
         cameraMode: cameraController.modeLabel(),
         autopilot: autopilot.isEnabled(),
         rivals: aiRivals.isEnabled(),
@@ -210,7 +210,7 @@ async function main() {
         if (d < bestDist) { bestDist = d; best = cell; }
       }
       if (best) car.resetTo(best.x, best.z, car.heading);
-      toast.show('Zurück auf die Straße', '', 1600);
+      toast.show('Back on the road', '', 1600);
       return;
     }
 
@@ -218,16 +218,16 @@ async function main() {
     const heading = Math.atan2(nearest.tangentX, nearest.tangentZ);
     car.resetTo(nearest.x, nearest.z, heading);
     lap.invalidateLap();
-    toast.show('Zurück auf die Strecke — Runde ungültig', 'invalid', 2000);
+    toast.show('Back on track — lap invalidated', 'invalid', 2000);
   }
 
   function announceLap(event) {
     if (!event.valid) {
-      toast.show(`Runde ungültig (${event.checkpointsOk ? 'abgekürzt' : 'Checkpoint verpasst'})`, 'invalid');
+      toast.show(`Lap invalid (${event.checkpointsOk ? 'cut the track' : 'missed a checkpoint'})`, 'invalid');
       return;
     }
-    if (event.best) toast.show(`Neue Bestzeit  ${formatLapTime(event.time)}`, 'best', 3200);
-    else toast.show(`Runde ${lap.lapCount()}  ${formatLapTime(event.time)}`);
+    if (event.best) toast.show(`New best lap  ${formatLapTime(event.time)}`, 'best', 3200);
+    else toast.show(`Lap ${lap.lapCount()}  ${formatLapTime(event.time)}`);
   }
 
   // ── Go
@@ -237,7 +237,7 @@ async function main() {
   overlay.close();
   loop.start();
   toast.show(
-    freeRoam ? 'Freie Fahrt — H blendet die Steuerung aus' : 'Viel Erfolg — H blendet die Steuerung aus',
+    freeRoam ? 'Free roam — press H to hide the controls' : 'Good luck — press H to hide the controls',
     '',
     4200
   );

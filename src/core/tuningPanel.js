@@ -17,7 +17,7 @@ export function createTuningPanel(car) {
   root.hidden = true;
 
   const title = document.createElement('h2');
-  title.textContent = 'Fahrzeug-Tuning (T)';
+  title.textContent = 'Vehicle tuning (T)';
   root.appendChild(title);
 
   const controls = new Map();
@@ -65,24 +65,24 @@ export function createTuningPanel(car) {
     controls.set(id, { get, set: apply });
   }
 
-  section('Dynamik');
-  addSlider({ id: 'maxSpeed', label: 'Höchstgeschw.', min: 8, max: 40, step: 0.1, get: () => car.maxSpeed, set: (v) => { car.maxSpeed = v; } });
-  addSlider({ id: 'accelRate', label: 'Beschleunigung', min: 4, max: 24, step: 0.1, get: () => car.accelRate, set: (v) => { car.accelRate = v; } });
-  addSlider({ id: 'brakeRate', label: 'Bremskraft', min: 6, max: 34, step: 0.1, get: () => car.brakeRate, set: (v) => { car.brakeRate = v; } });
-  addSlider({ id: 'gripLimit', label: 'Grip-Limit', min: 4, max: 26, step: 0.1, get: () => car.gripLimit, set: (v) => { car.gripLimit = v; } });
-  addSlider({ id: 'slipFactor', label: 'Drift-Neigung', min: 0, max: 0.5, step: 0.005, get: () => car.slipFactor, set: (v) => { car.slipFactor = v; } });
+  section('Dynamics');
+  addSlider({ id: 'maxSpeed', label: 'Top speed', min: 8, max: 40, step: 0.1, get: () => car.maxSpeed, set: (v) => { car.maxSpeed = v; } });
+  addSlider({ id: 'accelRate', label: 'Acceleration', min: 4, max: 24, step: 0.1, get: () => car.accelRate, set: (v) => { car.accelRate = v; } });
+  addSlider({ id: 'brakeRate', label: 'Brake force', min: 6, max: 34, step: 0.1, get: () => car.brakeRate, set: (v) => { car.brakeRate = v; } });
+  addSlider({ id: 'gripLimit', label: 'Grip limit', min: 4, max: 26, step: 0.1, get: () => car.gripLimit, set: (v) => { car.gripLimit = v; } });
+  addSlider({ id: 'slipFactor', label: 'Drift tendency', min: 0, max: 0.5, step: 0.005, get: () => car.slipFactor, set: (v) => { car.slipFactor = v; } });
   addSlider({
-    id: 'maxSteerDeg', label: 'Max. Lenkwinkel', min: 12, max: 48, step: 0.5,
+    id: 'maxSteerDeg', label: 'Max steering angle', min: 12, max: 48, step: 0.5,
     get: () => car.maxSteerDeg,
     set: (v) => { car.maxSteerDeg = v; car.maxSteer = THREE.MathUtils.degToRad(v); },
   });
 
-  section('Federung');
-  addSlider({ id: 'suspK', label: 'Federrate', min: 8, max: 60, step: 0.2, get: () => car.suspK, set: (v) => { car.suspK = v; } });
-  addSlider({ id: 'suspDamp', label: 'Dämpfung', min: 0.03, max: 0.4, step: 0.005, get: () => car.suspDamp, set: (v) => { car.suspDamp = v; } });
-  addSlider({ id: 'suspRange', label: 'Federweg', min: 0.02, max: 0.22, step: 0.002, get: () => car.suspRange, set: (v) => { car.suspRange = v; } });
+  section('Suspension');
+  addSlider({ id: 'suspK', label: 'Spring rate', min: 8, max: 60, step: 0.2, get: () => car.suspK, set: (v) => { car.suspK = v; } });
+  addSlider({ id: 'suspDamp', label: 'Damping', min: 0.03, max: 0.4, step: 0.005, get: () => car.suspDamp, set: (v) => { car.suspDamp = v; } });
+  addSlider({ id: 'suspRange', label: 'Travel', min: 0.02, max: 0.22, step: 0.002, get: () => car.suspRange, set: (v) => { car.suspRange = v; } });
 
-  section('Lampen-Position');
+  section('Lamp placement');
   for (const key of ['frontX', 'frontY', 'frontZ', 'rearX', 'rearY', 'rearZ']) {
     addSlider({
       id: `light_${key}`, label: key, min: -0.35, max: 0.35, step: 0.005,
@@ -138,15 +138,15 @@ export function createTuningPanel(car) {
     buttons.appendChild(button);
   };
 
-  addButton('Speichern', () => {
+  addButton('Save', () => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(currentPreset())); } catch { /* quota */ }
   });
-  addButton('Laden', () => applyPreset(readStored()));
+  addButton('Load', () => applyPreset(readStored()));
   addButton('Reset', () => applyPreset(defaultPreset));
 
   const footer = document.createElement('div');
   footer.className = 'tuning__foot';
-  footer.textContent = 'Presets liegen im localStorage.';
+  footer.textContent = 'Presets are stored in localStorage.';
   root.appendChild(footer);
 
   function readStored() {
